@@ -1,4 +1,4 @@
-# fuzzrex
+![A](https://github.com/user-attachments/assets/de238a4b-8956-4cec-9eca-57efb78ac633)
 A CLI tool designed to identify vulnerabilities in RESTful APIs and their associated configuration files through intelligent fuzz testing.
 
 # Core Features
