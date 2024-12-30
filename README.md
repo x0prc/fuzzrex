@@ -29,3 +29,13 @@ Fuzzers exist in a variety of options and with ton of features. This CLI tool is
 `pip install requests PyYAML jsonschema`
 
 # Installation
+- Create a Virtual Environment
+  `python3 -m venv venv`
+  `source venv/bin/activate`
+  `venv\Scripts\activate` // for Windows
+- Install Required Packages
+  `pip install -r requirements.txt`
+- Prepare Your OpenAPI Specification
+  - Ensure you have an OpenAPI specification file (e.g., openapi.json) that defines your API endpoints. Place this file in an accessible location on your filesystem.
+- Run the tool
+  `./fuzzrex.sh --api path/to/openapi.json --auth oauth2 --token YOUR_API_TOKEN_HERE`      
