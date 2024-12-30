@@ -17,9 +17,15 @@ A CLI tool designed to identify vulnerabilities in RESTful APIs and their associ
 | [Source](https://www.fuzzingbook.org/html/Fuzzer.html)  |  [Source](https://dfrws.org/wp-content/uploads/2019/06/pres_gaslight_-_a_comprehensive_fuzzing_architecture_for_memory_forensics_frameworks.pdf) |
 :-------------------------:|:------------------------------------:
 ![AB](https://github.com/user-attachments/assets/c7076971-bb2e-4f79-a5b4-6cca615adad4) | ![CD](https://github.com/user-attachments/assets/cefd9cff-4e32-4f1a-ab54-adbd4e0625a2)
-
+- **Input Handling**: Accepts user-specified OpenAPI files and configuration files.
+- **Fuzzing Engine**: Responsible for generating fuzzed inputs and sending requests.
+- **Monitoring Module**: Captures responses and application behavior.
+- **Reporting Module**: Compiles findings into user-friendly reports.
 
 # Motivation
 Fuzzers exist in a variety of options and with ton of features. This CLI tool is a simple combination of API Schema and associated Configuration Files Fuzzing as a package for assessing multiple vulnerabilities and thus saving time. Fuzzrex is designed not only as a testing tool but also as a collaborative platform for developers and security professionals.
+
 # Pre-requisites
+`pip install requests PyYAML jsonschema`
+
 # Installation
