@@ -30,9 +30,11 @@ Fuzzers exist in a variety of options and with ton of features. This CLI tool is
 
 # Installation
 - Create a Virtual Environment
-  `python3 -m venv venv`
-  `source venv/bin/activate`
-  `venv\Scripts\activate` // for Windows
+  - `python3 -m venv venv`
+  - `source venv/bin/activate`
+> [!NOTE]
+> For Windows use:
+    - `venv\Scripts\activate` 
 - Install Required Packages
   `pip install -r requirements.txt`
 - Prepare Your OpenAPI Specification
