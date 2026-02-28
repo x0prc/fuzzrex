@@ -1,6 +1,8 @@
 ![f](https://github.com/user-attachments/assets/ecc42996-b9e9-4e85-8b15-395e36dbd117)
 A CLI tool designed to identify vulnerabilities in RESTful APIs and their associated configuration files through intelligent fuzz testing.
 
+[Additional Docs](https://x0prc.github.io/notes/Notes/Published-Documentation/FuzzRex)
+
 # Core Features
 1. **Dynamic API Fuzzing**:
     - Parse OpenAPI specifications.
