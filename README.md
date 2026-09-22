@@ -1,45 +1,65 @@
 ![f](https://github.com/user-attachments/assets/ecc42996-b9e9-4e85-8b15-395e36dbd117)
-A CLI tool designed to identify vulnerabilities in RESTful APIs and their associated configuration files through intelligent fuzz testing.
+
+A CLI tool that fuzzes REST APIs from their OpenAPI spec and mutates configuration files (JSON/YAML) to surface unexpected behavior.
 
 [Additional Docs](https://x0prc.github.io/notes/Notes/Published-Documentation/FuzzRex)
 
-# Core Features
-1. **Dynamic API Fuzzing**:
-    - Parse OpenAPI specifications.
-    - Generate and send fuzzed requests to API endpoints.
-    - Monitor responses for errors or unexpected behaviors.
-2. **Configuration File Fuzz Testing**:
-    - Support multiple configuration file formats (JSON, YAML, XML).
-    - Generate malformed configurations and test application behavior.
-    - Log issues and provide recommendations.
-3. **Reporting**:
-    - Generate comprehensive reports for both API fuzzing and configuration testing.
+## Features
 
-# Fuzzing Architecture
-| [Source](https://www.fuzzingbook.org/html/Fuzzer.html)  |  [Source](https://dfrws.org/wp-content/uploads/2019/06/pres_gaslight_-_a_comprehensive_fuzzing_architecture_for_memory_forensics_frameworks.pdf) |
-:-------------------------:|:------------------------------------:
-![AB](https://github.com/user-attachments/assets/c7076971-bb2e-4f79-a5b4-6cca615adad4) | ![CD](https://github.com/user-attachments/assets/cefd9cff-4e32-4f1a-ab54-adbd4e0625a2)
-- **Input Handling**: Accepts user-specified OpenAPI files and configuration files.
-- **Fuzzing Engine**: Responsible for generating fuzzed inputs and sending requests.
-- **Monitoring Module**: Captures responses and application behavior.
-- **Reporting Module**: Compiles findings into user-friendly reports.
+1. **API fuzzing** — loads an OpenAPI spec (JSON/YAML), generates type-aware request values (including out-of-range boundaries), routes parameters correctly (path/query/header/cookie/body), carries state across requests, and reports 5xx responses.
+2. **Config fuzzing** — mutates JSON/YAML configs (typed value flips, null injection, key deletion, structure damage) and writes reproducible variants to disk.
+3. **Auth** — bearer-token auth on the CLI; OAuth2 client-credentials available via the Python API.
 
-# Motivation
-Fuzzers exist in a variety of options and with ton of features. This CLI tool is a simple combination of API Schema and associated Configuration Files Fuzzing as a package for assessing multiple vulnerabilities and thus saving time. Fuzzrex is designed not only as a testing tool but also as a collaborative platform for developers and security professionals.
+## Installation
 
-# Pre-requisites
-`pip install requests PyYAML jsonschema`
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
 
-# Installation
-- Create a Virtual Environment
-  - `python3 -m venv venv`
-  - `source venv/bin/activate`
-> [!NOTE]
-> For Windows use:
-    - `venv\Scripts\activate` 
-- Install Required Packages
-  `pip install -r requirements.txt`
-- Prepare Your OpenAPI Specification
-  - Ensure you have an OpenAPI specification file (e.g., openapi.json) that defines your API endpoints. Place this file in an accessible location on your filesystem.
-- Run the tool
-  `./fuzzrex.sh --api path/to/openapi.json --auth oauth2 --token YOUR_API_TOKEN_HERE`      
+## Usage
+
+```bash
+# Fuzz an API (base URL falls back to spec servers[0], then localhost:5000)
+fuzzrex --api openapi.yaml --base-url http://localhost:5000
+
+# With bearer auth
+fuzzrex --api openapi.json --auth token --token "$API_TOKEN"
+
+# Generate config variants
+fuzzrex --config app.yaml --variants 25 --out findings/configs --seed 42
+
+# Both in one run
+fuzzrex --api openapi.yaml --config app.yaml
+```
+
+Exit codes: `0` clean, `1` findings reported, `2` usage/config error.
+
+### Python API
+
+```python
+from fuzzrex.api_fuzzer import ApiFuzzer
+from fuzzrex.auth import AuthHandler
+from fuzzrex.config_fuzzer import ConfigFuzzer
+
+auth = AuthHandler(auth_type="token", token="...")
+findings = ApiFuzzer("openapi.yaml", base_url="http://localhost:5000", auth=auth).run()
+
+ConfigFuzzer("app.yaml").run("findings/configs", count=25, seed=42)
+```
+
+## Development
+
+```bash
+ruff check fuzzrex tests
+pytest
+```
+
+## Motivation
+
+Fuzzing API schemas and deployment configuration as one package shortens security assessments: both are attack surfaces, and interaction bugs between them are what this project is ultimately aiming to search.
+
+## License
+
+MIT
