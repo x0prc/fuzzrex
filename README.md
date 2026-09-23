@@ -49,6 +49,30 @@ findings = ApiFuzzer("openapi.yaml", base_url="http://localhost:5000", auth=auth
 ConfigFuzzer("app.yaml").run("findings/configs", count=25, seed=42)
 ```
 
+### Orchestrator (config x API)
+
+Apply a config variant to a Dockerized SUT, fuzz under it, and restore:
+
+```python
+from fuzzrex.orchestrator import DockerComposeOrchestrator, configured_service
+
+orch = DockerComposeOrchestrator(
+    "examples/demo-api/docker-compose.yml",
+    "demo-api",
+    "examples/demo-api/config.json",
+    "http://127.0.0.1:5001",
+)
+orch.up(build=True)  # first time only
+with configured_service(orch, {"debug": True, "require_auth": True}):
+    findings = ApiFuzzer("openapi.json", base_url=orch.base_url).run()
+```
+
+Demo SUT: `examples/demo-api/` (config-gated auth + debug leak). Bring it up with:
+
+```bash
+docker compose -f examples/demo-api/docker-compose.yml up -d --build
+```
+
 ## Development
 
 ```bash
