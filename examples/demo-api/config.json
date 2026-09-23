@@ -1,0 +1,5 @@
+{
+  "debug": false,
+  "require_auth": false,
+  "greeting": "hello"
+}
