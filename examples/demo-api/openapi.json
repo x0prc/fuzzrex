@@ -1,0 +1,29 @@
+{
+  "openapi": "3.0.0",
+  "servers": [{"url": "http://127.0.0.1:5001"}],
+  "paths": {
+    "/health": {
+      "get": {
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/api/info": {
+      "get": {
+        "responses": {"200": {"description": "info"}}
+      }
+    },
+    "/api/admin": {
+      "get": {
+        "responses": {
+          "200": {"description": "ok"},
+          "401": {"description": "unauthorized"}
+        }
+      }
+    },
+    "/api/greeting": {
+      "get": {
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}
