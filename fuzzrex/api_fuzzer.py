@@ -11,6 +11,7 @@ import requests
 
 from fuzzrex.auth import AuthHandler
 from fuzzrex.mutations import fuzz_value
+from fuzzrex.oracle import HttpRequest, send_request
 from fuzzrex.spec import load_spec
 from fuzzrex.state import StateManager
 
@@ -66,28 +67,50 @@ class ApiFuzzer:
                 details["_shared_parameters"] = shared_params
                 yield method.upper(), path, details
 
+    def plan(self) -> list[HttpRequest]:
+        """Build the full request sequence once so it can be replayed across config cells."""
+        planned: list[HttpRequest] = []
+        for method, path, details in self.iter_operations():
+            built = self._build_request(method, path, details)
+            planned.append(
+                HttpRequest(
+                    method=method,
+                    url=built["url"],
+                    params=built["params"],
+                    headers=built["headers"],
+                    cookies=built["cookies"],
+                    body=built["json"],
+                    path=path,
+                    label=f"{method} {path}",
+                ),
+            )
+        return planned
+
     def run(self) -> list[Finding]:
         findings: list[Finding] = []
-        for method, path, details in self.iter_operations():
-            request_kwargs = self._build_request(method, path, details)
+        for request in self.plan():
             try:
-                response = requests.request(
-                    method,
-                    request_kwargs["url"],
-                    params=request_kwargs["params"],
-                    headers=request_kwargs["headers"],
-                    cookies=request_kwargs["cookies"],
-                    json=request_kwargs["json"],
-                    timeout=self.timeout,
-                )
+                response = send_request(request, timeout=self.timeout)
             except requests.RequestException as exc:
-                findings.append(Finding(method, path, None, f"request error: {exc}"))
+                findings.append(
+                    Finding(
+                        request.method,
+                        request.path or request.label,
+                        None,
+                        f"request error: {exc}",
+                    ),
+                )
                 continue
 
             self.state.update(response)
             if response.status_code >= 500:
                 findings.append(
-                    Finding(method, path, response.status_code, "server error"),
+                    Finding(
+                        request.method,
+                        request.path or request.label,
+                        response.status_code,
+                        "server error",
+                    ),
                 )
         return findings
 
