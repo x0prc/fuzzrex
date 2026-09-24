@@ -73,6 +73,25 @@ Demo SUT: `examples/demo-api/` (config-gated auth + debug leak). Bring it up wit
 docker compose -f examples/demo-api/docker-compose.yml up -d --build
 ```
 
+### Differential oracle
+
+Replay one planned request sequence under two config cells and keep only
+security-relevant divergence (`auth-boundary`, `info-leak`, `server-error`,
+`status`, `transport`):
+
+```python
+from fuzzrex.api_fuzzer import ApiFuzzer
+from fuzzrex.oracle import differential_probe
+
+sequence = ApiFuzzer("openapi.json", base_url="http://127.0.0.1:5001").plan()
+divergences = differential_probe(
+    orch,
+    baseline_config={"debug": False, "require_auth": False, "greeting": "hello"},
+    variant_config={"debug": True, "require_auth": True, "greeting": "hello"},
+    sequence=sequence,
+)
+```
+
 ## Development
 
 ```bash
