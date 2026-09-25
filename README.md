@@ -39,8 +39,7 @@ Exit codes: `0` clean, `1` findings reported, `2` usage/config error.
 ### Python API
 
 ```python
-from fuzzrex.api_fuzzer import ApiFuzzer
-from fuzzrex.auth import AuthHandler
+from fuzzrex.api_fuzzer import ApiFuzzer, AuthHandler
 from fuzzrex.config_fuzzer import ConfigFuzzer
 
 auth = AuthHandler(auth_type="token", token="...")
@@ -54,6 +53,7 @@ ConfigFuzzer("app.yaml").run("findings/configs", count=25, seed=42)
 Apply a config variant to a Dockerized SUT, fuzz under it, and restore:
 
 ```python
+from fuzzrex.api_fuzzer import ApiFuzzer
 from fuzzrex.orchestrator import DockerComposeOrchestrator, configured_service
 
 orch = DockerComposeOrchestrator(
@@ -90,6 +90,25 @@ divergences = differential_probe(
     variant_config={"debug": True, "require_auth": True, "greeting": "hello"},
     sequence=sequence,
 )
+```
+
+### Joint search
+
+Alternate config mutation and API probing; divergent cells become the next
+mutation base (with periodic restarts to the baseline for diversity):
+
+```python
+from fuzzrex.oracle import run_joint_search
+
+results = run_joint_search(
+    orch,
+    baseline_config={"debug": False, "require_auth": False, "greeting": "hello"},
+    sequence=sequence,
+    iterations=20,
+    seed=42,
+)
+for cell in results:
+    print(cell.config, cell.divergences)
 ```
 
 ## Development
