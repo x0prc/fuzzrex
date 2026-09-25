@@ -6,8 +6,7 @@ import argparse
 import sys
 
 from fuzzrex import __version__
-from fuzzrex.api_fuzzer import ApiFuzzer
-from fuzzrex.auth import AuthHandler
+from fuzzrex.api_fuzzer import ApiFuzzer, AuthHandler
 from fuzzrex.config_fuzzer import ConfigFuzzer
 
 

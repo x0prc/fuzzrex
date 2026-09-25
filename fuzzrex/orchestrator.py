@@ -11,7 +11,7 @@ from typing import Any
 
 import requests
 
-from fuzzrex.spec import dump_document, load_document
+from fuzzrex.schema import dump_document, load_document
 
 DEFAULT_COMPOSE = ("docker", "compose")
 DEFAULT_HEALTH_TIMEOUT = 60.0

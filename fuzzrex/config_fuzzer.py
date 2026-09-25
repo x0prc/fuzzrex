@@ -7,8 +7,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from fuzzrex.mutations import fuzz_value
-from fuzzrex.spec import dump_document, load_document
+from fuzzrex.schema import dump_document, fuzz_value, load_document
 
 
 class ConfigFuzzer:
@@ -25,7 +24,7 @@ class ConfigFuzzer:
         if count < 1:
             raise ValueError("count must be >= 1")
         rng = random.Random(seed)
-        return [self._mutate(copy.deepcopy(self.original), rng) for _ in range(count)]
+        return [mutate_config(self.original, rng) for _ in range(count)]
 
     def run(self, out_dir: str | Path, count: int = 20, seed: int | None = None) -> list[Path]:
         """Generate variants and write them next to each other under `out_dir`."""
@@ -37,30 +36,34 @@ class ConfigFuzzer:
             written.append(target)
         return written
 
-    def _mutate(self, document: Any, rng: random.Random) -> Any:
-        leaves = _collect_leaves(document)
-        if not leaves:
-            return document
 
-        strategy = rng.choice(["value", "value", "null", "delete", "structure"])
-        container, key = rng.choice(leaves)
-
-        if strategy == "value":
-            container[key] = _fuzz_leaf(container[key], rng)
-        elif strategy == "null":
-            container[key] = None
-        elif strategy == "delete" and isinstance(document, dict):
-            _delete_key(document, key, rng)
-        else:  # structure
-            container[key] = _fuzz_leaf(container[key], rng)
-            if isinstance(container[key], dict) and container[key] and rng.random() < 0.5:
-                # Drop one nested field to break structure assumptions.
-                nested_leaves = _collect_leaves(container[key])
-                if nested_leaves:
-                    nested_container, nested_key = rng.choice(nested_leaves)
-                    if isinstance(nested_container, dict):
-                        nested_container.pop(nested_key, None)
+def mutate_config(document: Any, rng: random.Random | None = None) -> Any:
+    """Return a deep copy of `document` with one strategy applied (value/null/delete/structure)."""
+    rng = rng or random.Random()
+    document = copy.deepcopy(document)
+    leaves = _collect_leaves(document)
+    if not leaves:
         return document
+
+    strategy = rng.choice(["value", "value", "null", "delete", "structure"])
+    container, key = rng.choice(leaves)
+
+    if strategy == "value":
+        container[key] = _fuzz_leaf(container[key], rng)
+    elif strategy == "null":
+        container[key] = None
+    elif strategy == "delete" and isinstance(document, dict):
+        _delete_key(document, key, rng)
+    else:  # structure
+        container[key] = _fuzz_leaf(container[key], rng)
+        if isinstance(container[key], dict) and container[key] and rng.random() < 0.5:
+            # Drop one nested field to break structure assumptions.
+            nested_leaves = _collect_leaves(container[key])
+            if nested_leaves:
+                nested_container, nested_key = rng.choice(nested_leaves)
+                if isinstance(nested_container, dict):
+                    nested_container.pop(nested_key, None)
+    return document
 
 
 def _fuzz_leaf(value: Any, rng: random.Random) -> Any:

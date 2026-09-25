@@ -1,16 +1,30 @@
-"""Differential oracle: flag security-relevant response changes across config cells."""
+"""Differential oracle and joint config x API search.
+
+Flags security-relevant response changes across config cells, and drives
+the feedback loop that mutates configs while replaying a fixed request
+sequence.
+"""
 
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import requests
 
-from fuzzrex.orchestrator import DockerComposeOrchestrator, configured_service
+from fuzzrex.config_fuzzer import mutate_config
+from fuzzrex.orchestrator import (
+    DockerComposeOrchestrator,
+    OrchestratorError,
+    configured_service,
+)
 
 DEFAULT_TIMEOUT = 10.0
+# Re-seed from the baseline this often so a single interesting cell cannot
+# monopolize the mutation chain (diversity vs. exploitation balance).
+RESTART_EVERY = 4
 SENSITIVE_KEY_MARKERS = (
     "stack",
     "traceback",
@@ -227,3 +241,55 @@ def _collect_keys(body: Any) -> frozenset[str]:
         elif isinstance(node, list):
             stack.extend(node)
     return frozenset(keys)
+
+
+@dataclass(frozen=True)
+class CellResult:
+    """A config cell whose responses diverged from the baseline in a security-relevant way."""
+
+    config: Any
+    divergences: tuple[Divergence, ...]
+
+
+def run_joint_search(
+    orchestrator: DockerComposeOrchestrator,
+    baseline_config: Any,
+    sequence: Sequence[HttpRequest],
+    *,
+    iterations: int = 20,
+    seed: int | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> list[CellResult]:
+    """Alternate config mutation and API probing; return cells with security-relevant divergence.
+
+    Baseline snapshots are recorded once. Each iteration mutates a config
+    (starting from baseline, then from the last divergent cell), replays the
+    fixed request sequence under it, and diffs against baseline. Cells that
+    fail to become healthy are skipped.
+    """
+    if iterations < 1:
+        raise ValueError("iterations must be >= 1")
+
+    rng = random.Random(seed)
+    with configured_service(orchestrator, baseline_config):
+        baseline_snaps = execute_sequence(sequence, timeout=timeout)
+
+    mutation_base = baseline_config
+    results: list[CellResult] = []
+
+    for index in range(iterations):
+        variant = mutate_config(mutation_base, rng)
+        try:
+            with configured_service(orchestrator, variant):
+                snaps = execute_sequence(sequence, timeout=timeout)
+        except OrchestratorError:
+            continue
+
+        divergences = compare_sequences(sequence, baseline_snaps, snaps)
+        if divergences:
+            results.append(CellResult(variant, tuple(divergences)))
+            mutation_base = variant
+        elif index % RESTART_EVERY == RESTART_EVERY - 1:
+            mutation_base = baseline_config
+
+    return results
