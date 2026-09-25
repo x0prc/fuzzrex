@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from fuzzrex.config_fuzzer import ConfigFuzzer
+from fuzzrex.config_fuzzer import ConfigFuzzer, mutate_config
 
 
 @pytest.fixture
@@ -73,3 +73,25 @@ def test_json_config_roundtrip(tmp_path: Path):
 def test_invalid_count(config_file: Path):
     with pytest.raises(ValueError):
         ConfigFuzzer(config_file).generate_variants(count=0)
+
+
+def test_mutate_config_returns_copy_not_in_place():
+    original = {"debug": False, "port": 80}
+    mutated = mutate_config(original)
+    assert mutated is not original
+    assert original == {"debug": False, "port": 80}
+
+
+def test_mutate_config_deterministic_with_seed():
+    import random
+
+    original = {"debug": False, "port": 80, "name": "x"}
+    seed_rng = lambda: random.Random(7)  # noqa: E731
+    assert mutate_config(original, seed_rng()) == mutate_config(original, seed_rng())
+
+
+def test_config_fuzzer_still_uses_mutate_config(tmp_path: Path):
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump({"debug": False, "port": 80}))
+    variants = ConfigFuzzer(path).generate_variants(count=10, seed=3)
+    assert any(v != {"debug": False, "port": 80} for v in variants)

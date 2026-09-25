@@ -4,8 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fuzzrex.api_fuzzer import ApiFuzzer, Finding
-from fuzzrex.auth import AuthHandler
+from fuzzrex.api_fuzzer import ApiFuzzer, AuthHandler, Finding, StateManager
 
 SPEC = {
     "openapi": "3.0.0",
@@ -137,3 +136,117 @@ def test_run_captures_request_errors(mock_request, spec_path: Path):
     findings = fuzzer.run()
     assert len(findings) == len(list(fuzzer.iter_operations()))
     assert all(f.status_code is None for f in findings)
+
+
+# --- AuthHandler ---
+
+
+def test_no_auth_returns_empty_headers():
+    assert AuthHandler().headers() == {}
+
+
+def test_token_auth_header():
+    handler = AuthHandler(auth_type="token", token="sekret")
+    assert handler.headers() == {"Authorization": "Bearer sekret"}
+
+
+def test_token_auth_requires_token():
+    with pytest.raises(ValueError):
+        AuthHandler(auth_type="token")
+
+
+def test_oauth2_requires_config():
+    with pytest.raises(ValueError):
+        AuthHandler(auth_type="oauth2")
+    with pytest.raises(ValueError):
+        AuthHandler(auth_type="oauth2", oauth2={"client_id": "x"})
+
+
+def test_unsupported_auth_type():
+    with pytest.raises(ValueError):
+        AuthHandler(auth_type="basic")
+
+
+@patch("fuzzrex.api_fuzzer.requests.post")
+def test_oauth2_retrieves_and_caches_token(mock_post):
+    mock_response = MagicMock(status_code=200)
+    mock_response.json.return_value = {"access_token": "tok-1"}
+    mock_post.return_value = mock_response
+
+    handler = AuthHandler(
+        auth_type="oauth2",
+        oauth2={
+            "client_id": "id",
+            "client_secret": "secret",
+            "token_url": "https://auth.example/token",
+            "scope": "read",
+        },
+    )
+    assert handler.headers() == {"Authorization": "Bearer tok-1"}
+    assert handler.headers() == {"Authorization": "Bearer tok-1"}
+    assert mock_post.call_count == 1
+
+    handler.invalidate()
+    handler.headers()
+    assert mock_post.call_count == 2
+
+
+@patch("fuzzrex.api_fuzzer.requests.post")
+def test_oauth2_failure_raises(mock_post):
+    mock_response = MagicMock(status_code=401)
+    mock_post.return_value = mock_response
+    handler = AuthHandler(
+        auth_type="oauth2",
+        oauth2={"client_id": "id", "client_secret": "s", "token_url": "https://x/t"},
+    )
+    with pytest.raises(RuntimeError):
+        handler.headers()
+
+
+# --- StateManager ---
+
+
+def _state_response(payload, as_json=True):
+    response = MagicMock()
+    if as_json:
+        response.json.return_value = payload
+    else:
+        response.json.side_effect = ValueError("not json")
+    return response
+
+
+def test_collects_flat_scalars():
+    state = StateManager()
+    state.update(_state_response({"userId": 42, "sessionToken": "abc"}))
+    assert state.resolve("userId") == 42
+    assert state.resolve("sessionToken") == "abc"
+    assert state.last_response == {"userId": 42, "sessionToken": "abc"}
+
+
+def test_collects_nested_and_list_values():
+    state = StateManager()
+    state.update(
+        _state_response(
+            {
+                "user": {"id": 7, "profile": {"name": "ada"}},
+                "items": [{"sku": "x1"}],
+            },
+        ),
+    )
+    assert state.resolve("id") == 7
+    assert state.resolve("name") == "ada"
+    assert state.resolve("sku") == "x1"
+
+
+def test_non_json_response_is_ignored():
+    state = StateManager()
+    state.update(_state_response(None, as_json=False))
+    assert state.known_values == {}
+    assert state.last_response is None
+
+
+def test_null_values_not_stored():
+    state = StateManager()
+    state.update(_state_response({"token": None, "ok": "yes"}))
+    assert state.resolve("token") is None
+    assert state.resolve("ok") == "yes"

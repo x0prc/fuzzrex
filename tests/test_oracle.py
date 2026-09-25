@@ -5,6 +5,8 @@ import pytest
 import requests as requests_lib
 
 from fuzzrex.oracle import (
+    RESTART_EVERY,
+    CellResult,
     Divergence,
     HttpRequest,
     ResponseSnapshot,
@@ -12,6 +14,7 @@ from fuzzrex.oracle import (
     differential_probe,
     execute_sequence,
     is_sensitive_key,
+    run_joint_search,
     send_request,
     snapshot_response,
 )
@@ -178,3 +181,98 @@ def test_differential_probe_uses_same_sequence(mock_cm, mock_execute):
     assert len(divergences) == 1
     assert divergences[0].kind == "auth-boundary"
     assert isinstance(divergences[0], Divergence)
+
+
+# --- Joint config x API search ---
+
+
+def _orchestrator_mock():
+    orch = MagicMock()
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=orch)
+    cm.__exit__ = MagicMock(return_value=False)
+    return orch, cm
+
+
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_returns_only_divergent_cells(mock_cm, mock_execute):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    baseline = [_snap(200)]
+    clean = [_snap(200)]
+    dirty = [_snap(401)]
+    # baseline recording, then one clean cell, then one dirty cell
+    mock_execute.side_effect = [baseline, clean, dirty]
+
+    planned = [_request("GET /admin")]
+    results = run_joint_search(orch, {"debug": False}, planned, iterations=2, seed=1)
+
+    assert len(results) == 1
+    assert isinstance(results[0], CellResult)
+    assert results[0].divergences[0].kind == "auth-boundary"
+    # baseline + 2 cells = 3 executions
+    assert mock_execute.call_count == 3
+
+
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_skips_unhealthy_cells(mock_cm, mock_execute):
+    from fuzzrex.orchestrator import OrchestratorError
+
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    baseline = [_snap(200)]
+    healthy = [_snap(401)]
+    mock_execute.side_effect = [baseline, healthy]
+
+    planned = [_request("GET /admin")]
+    # Make configured_service's __enter__ raise on the 2nd call.
+    enters = {"count": 0}
+
+    def enter(_self=None):
+        enters["count"] += 1
+        if enters["count"] == 2:
+            raise OrchestratorError("unhealthy")
+        return orch
+
+    mock_cm.return_value.__enter__ = MagicMock(side_effect=enter)
+
+    results = run_joint_search(orch, {"debug": False}, planned, iterations=2, seed=1)
+    # first cell skipped, second cell executed with healthy snapshots (dirty)
+    assert len(results) == 1
+    assert mock_execute.call_count == 2  # baseline + one successful cell
+
+
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_restart_every_resets_mutation_base(mock_cm, mock_execute):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    dirty = [_snap(401)]
+    clean = [_snap(200)]
+    # baseline recorded as clean 200; every probed cell then diverges
+    mock_execute.side_effect = [clean] + [dirty] * (RESTART_EVERY + 1)
+
+    planned = [_request("GET /admin")]
+    results = run_joint_search(
+        orch,
+        {"debug": False},
+        planned,
+        iterations=RESTART_EVERY + 1,
+        seed=2,
+    )
+
+    # every executed cell diverged
+    assert len(results) == RESTART_EVERY + 1
+    # baseline recorded once only
+    assert mock_execute.call_count == RESTART_EVERY + 2
+
+
+def test_iterations_validation():
+    orch, _ = _orchestrator_mock()
+    with pytest.raises(ValueError, match="iterations"):
+        run_joint_search(orch, [], {"a": 1}, iterations=0)
