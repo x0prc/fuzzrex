@@ -13,3 +13,4 @@ findings/
 *.fuzz.json
 *.fuzz.yaml
 *.fuzz.yml
+.schemathesis/

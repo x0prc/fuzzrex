@@ -111,6 +111,39 @@ for cell in results:
     print(cell.config, cell.divergences)
 ```
 
+### Baseline runner (Schemathesis)
+
+Run an off-the-shelf single-cell API fuzzer once per config cell to
+produce the comparison arm for joint fuzzing:
+
+```bash
+pip install -e ".[baseline]"
+```
+
+```python
+from fuzzrex.baseline import run_baseline_matrix
+
+results = run_baseline_matrix(
+    orch,
+    configs=[baseline_config, variant_config],
+    spec_path="examples/demo-api/openapi.json",
+    seed=42,
+    max_examples=25,
+)
+for cell in results:
+    print(cell.config, "findings:", cell.total)
+```
+
+Each cell is applied with the orchestrator (restart + health check),
+Schemathesis runs against it, and the original config is restored.
+Findings come back as `BaselineFinding` groups (`failure` = failed
+check, `error` = test crash), parsed from Schemathesis's JSON report.
+
+On the demo API the contrast is already visible: across the same
+config cells the baseline reports 0 findings while joint search finds
+`info-leak` and `auth-boundary` divergences — config-gated issues that
+single-cell API fuzzing does not observe.
+
 ## Development
 
 ```bash
