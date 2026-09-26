@@ -19,6 +19,9 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.4",
 ]
+baseline = [
+    "schemathesis>=4.0",
+]
 
 [project.scripts]
 fuzzrex = "fuzzrex.cli:main"
