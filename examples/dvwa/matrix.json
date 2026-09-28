@@ -1,0 +1,4 @@
+{
+  "disable_authentication": false,
+  "default_security_level": "low"
+}

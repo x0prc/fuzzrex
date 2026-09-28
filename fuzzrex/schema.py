@@ -19,11 +19,17 @@ def _is_yaml(path: Path) -> bool:
     return path.suffix.lower() in {".yaml", ".yml"}
 
 
+def _is_ini(path: Path) -> bool:
+    return path.suffix.lower() in {".ini", ".cfg", ".conf"}
+
+
 def load_document(path: str | Path) -> Any:
-    """Load a JSON or YAML file, detecting format from the extension."""
+    """Load a JSON, YAML, or INI file, detecting format from the extension."""
     file_path = Path(path)
     if not file_path.is_file():
         raise FileNotFoundError(f"File not found: {file_path}")
+    if _is_ini(file_path):
+        return load_ini(file_path)
     text = file_path.read_text(encoding="utf-8")
     if _is_yaml(file_path):
         return yaml.safe_load(text)
@@ -32,6 +38,61 @@ def load_document(path: str | Path) -> Any:
     except json.JSONDecodeError:
         # Fall back to YAML for extension-less or mislabeled files.
         return yaml.safe_load(text)
+
+
+def load_ini(path: str | Path) -> dict[str, dict[str, Any]]:
+    """Parse a simple INI file into {section: {key: value}}.
+
+    `true`/`false` and integers are coerced so config mutation sees real
+    scalars; comments and blank lines are skipped; keys before the first
+    section are collected under the empty section name.
+    """
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    document: dict[str, dict[str, Any]] = {}
+    section = ""
+    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line[0] in ";#":
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            document.setdefault(section, {})
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            document.setdefault(section, {})[key.strip()] = _coerce_scalar(value.strip())
+    return document
+
+
+def _coerce_scalar(value: str) -> Any:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def dump_ini(document: dict[str, dict[str, Any]], path: str | Path) -> None:
+    """Write {section: {key: value}} as INI; booleans become lowercase strings."""
+    file_path = Path(path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    for section, values in document.items():
+        if section:
+            lines.append(f"[{section}]")
+        if not isinstance(values, dict):
+            raise ValueError(f"INI section {section!r} must map to a mapping")
+        for key, value in values.items():
+            rendered = str(value).lower() if isinstance(value, bool) else str(value)
+            lines.append(f"{key} = {rendered}")
+        lines.append("")
+    file_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def load_spec(path: str | Path) -> dict[str, Any]:
@@ -48,6 +109,9 @@ def dump_document(document: Any, path: str | Path) -> None:
     """Write a structure to disk, matching format to the file extension."""
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    if _is_ini(file_path):
+        dump_ini(document, file_path)
+        return
     if _is_yaml(file_path):
         file_path.write_text(
             yaml.safe_dump(document, sort_keys=False, allow_unicode=True),

@@ -1,0 +1,21 @@
+services:
+  dvwa:
+    image: ghcr.io/digininja/dvwa:latest
+    ports:
+      - "127.0.0.1:4280:80"
+    volumes:
+      - ./config.inc.php:/var/www/html/config/config.inc.php
+      - ./matrix.json:/var/www/html/config/matrix.json
+    environment:
+      - DB_SERVER=db
+      - DEFAULT_SECURITY_LEVEL=low
+    depends_on:
+      - db
+
+  db:
+    image: docker.io/library/mariadb:10
+    environment:
+      - MYSQL_ROOT_PASSWORD=dvwa
+      - MYSQL_DATABASE=dvwa
+      - MYSQL_USER=dvwa
+      - MYSQL_PASSWORD=p@ssw0rd

@@ -1,0 +1,86 @@
+openapi: 3.0.3
+info:
+  title: Grafana fixture API
+  version: '1.0'
+servers:
+  - url: http://127.0.0.1:3000
+paths:
+  /api/health:
+    get:
+      operationId: get_api_health
+      summary: GET /api/health
+      responses:
+        '200':
+          description: observed response
+  /api/search:
+    get:
+      operationId: get_api_search
+      summary: GET /api/search
+      responses:
+        '200':
+          description: observed response
+        '401':
+          description: observed response
+  /api/org:
+    get:
+      operationId: get_api_org
+      summary: GET /api/org
+      responses:
+        '200':
+          description: observed response
+        '401':
+          description: observed response
+  /api/frontend/settings:
+    get:
+      operationId: get_api_frontend_settings
+      summary: GET /api/frontend/settings
+      responses:
+        '200':
+          description: observed response
+        '401':
+          description: observed response
+  /api/users:
+    get:
+      operationId: get_api_users
+      summary: GET /api/users
+      responses:
+        '401':
+          description: observed response
+        '403':
+          description: observed response
+  /api/admin/settings:
+    get:
+      operationId: get_api_admin_settings
+      summary: GET /api/admin/settings
+      responses:
+        '401':
+          description: observed response
+        '403':
+          description: observed response
+  /api/annotations:
+    get:
+      operationId: get_api_annotations
+      summary: GET /api/annotations
+      responses:
+        '200':
+          description: observed response
+        '401':
+          description: observed response
+  /api/dashboards/home:
+    get:
+      operationId: get_api_dashboards_home
+      summary: GET /api/dashboards/home
+      responses:
+        '200':
+          description: observed response
+        '401':
+          description: observed response
+  /api/org/preferences:
+    get:
+      operationId: get_api_org_preferences
+      summary: GET /api/org/preferences
+      responses:
+        '401':
+          description: observed response
+        '403':
+          description: observed response

@@ -37,17 +37,30 @@ class ConfigFuzzer:
         return written
 
 
-def mutate_config(document: Any, rng: random.Random | None = None) -> Any:
-    """Return a deep copy of `document` with one strategy applied (value/null/delete/structure)."""
+def mutate_config(
+    document: Any,
+    rng: random.Random | None = None,
+    *,
+    enums: dict[str, Any] | None = None,
+) -> Any:
+    """Return a deep copy of `document` with one strategy applied (value/null/delete/structure).
+
+    `enums` maps a key name to its allowed values (e.g. {"log_level":
+    ["debug", "info", "error"]}); mutations of those keys always stay
+    inside the vocabulary instead of producing arbitrary fuzz strings.
+    """
     rng = rng or random.Random()
     document = copy.deepcopy(document)
     leaves = _collect_leaves(document)
     if not leaves:
         return document
 
-    strategy = rng.choice(["value", "value", "null", "delete", "structure"])
     container, key = rng.choice(leaves)
-
+    allowed = enums.get(key) if enums else None
+    if allowed:
+        container[key] = rng.choice(list(allowed))
+        return document
+    strategy = rng.choice(["value", "value", "null", "delete", "structure"])
     if strategy == "value":
         container[key] = _fuzz_leaf(container[key], rng)
     elif strategy == "null":
@@ -63,7 +76,29 @@ def mutate_config(document: Any, rng: random.Random | None = None) -> Any:
                 nested_container, nested_key = rng.choice(nested_leaves)
                 if isinstance(nested_container, dict):
                     nested_container.pop(nested_key, None)
+    if enums:
+        _clamp_enums(document, enums, rng)
     return document
+
+
+def _clamp_enums(document: Any, enums: dict[str, Any], rng: random.Random) -> None:
+    """Pull any enum-constrained key back into its vocabulary.
+
+    Guards against indirect mutations, e.g. fuzzing a parent dict that
+    rewrites a nested enum key as an arbitrary string.
+    """
+    stack: list[Any] = [document]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                allowed = enums.get(key)
+                if allowed and value not in allowed:
+                    node[key] = rng.choice(list(allowed))
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
 
 
 def _fuzz_leaf(value: Any, rng: random.Random) -> Any:

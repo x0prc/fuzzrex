@@ -8,7 +8,7 @@ sequence.
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,6 +58,7 @@ class ResponseSnapshot:
     body: Any
     text_sample: str
     sensitive_keys: frozenset[str]
+    location: str = ""
 
     @property
     def ok(self) -> bool:
@@ -76,6 +77,8 @@ class Divergence:
 
 
 def send_request(request: HttpRequest, timeout: float = DEFAULT_TIMEOUT) -> requests.Response:
+    # Redirects are not followed: the immediate status + Location are part of
+    # what differs across config cells (e.g. 302 to a login page).
     return requests.request(
         request.method,
         request.url,
@@ -84,6 +87,7 @@ def send_request(request: HttpRequest, timeout: float = DEFAULT_TIMEOUT) -> requ
         cookies=request.cookies,
         json=request.body,
         timeout=timeout,
+        allow_redirects=False,
     )
 
 
@@ -97,11 +101,18 @@ def snapshot_response(response: requests.Response) -> ResponseSnapshot:
     text_sample = response.text[:1000]
     if "traceback" in text_sample.lower() and "traceback" not in {k.lower() for k in sensitive}:
         sensitive = sensitive | {"traceback"}
+    # requests.structures.CaseInsensitiveDict is a Mapping, not a dict.
+    headers = getattr(response, "headers", None)
+    location = ""
+    if isinstance(headers, Mapping):
+        raw = headers.get("Location", "")
+        location = raw if isinstance(raw, str) else ""
     return ResponseSnapshot(
         status_code=response.status_code,
         body=body,
         text_sample=text_sample,
         sensitive_keys=sensitive,
+        location=location,
     )
 
 
@@ -176,8 +187,8 @@ def _compare_pair(
             )
         return found
 
-    if _crosses_auth(base_status, var_status):
-        if var_status in AUTH_STATUSES:
+    if _crosses_auth(base_status, baseline.location, var_status, variant.location):
+        if _is_auth_status(var_status, variant.location):
             direction = "auth required under variant"
         else:
             direction = "auth bypassed under variant"
@@ -219,10 +230,19 @@ def _compare_pair(
     return found
 
 
-def _crosses_auth(baseline: int, variant: int) -> bool:
-    return (_is_success(baseline) and variant in AUTH_STATUSES) or (
-        baseline in AUTH_STATUSES and _is_success(variant)
+def _crosses_auth(base_status: int, base_location: str, var_status: int, var_location: str) -> bool:
+    return (
+        _is_success(base_status) and _is_auth_status(var_status, var_location)
+    ) or (
+        _is_auth_status(base_status, base_location) and _is_success(var_status)
     )
+
+
+def _is_auth_status(status: int, location: str) -> bool:
+    """401/403, or a redirect whose Location targets a login page."""
+    if status in AUTH_STATUSES:
+        return True
+    return status is not None and 300 <= status < 400 and "login" in (location or "").lower()
 
 
 def _is_success(status: int) -> bool:
@@ -259,13 +279,15 @@ def run_joint_search(
     iterations: int = 20,
     seed: int | None = None,
     timeout: float = DEFAULT_TIMEOUT,
+    enums: dict[str, Any] | None = None,
 ) -> list[CellResult]:
     """Alternate config mutation and API probing; return cells with security-relevant divergence.
 
     Baseline snapshots are recorded once. Each iteration mutates a config
     (starting from baseline, then from the last divergent cell), replays the
     fixed request sequence under it, and diffs against baseline. Cells that
-    fail to become healthy are skipped.
+    fail to become healthy are skipped. `enums` constrains named keys to
+    their allowed values during mutation.
     """
     if iterations < 1:
         raise ValueError("iterations must be >= 1")
@@ -278,7 +300,7 @@ def run_joint_search(
     results: list[CellResult] = []
 
     for index in range(iterations):
-        variant = mutate_config(mutation_base, rng)
+        variant = mutate_config(mutation_base, rng, enums=enums)
         try:
             with configured_service(orchestrator, variant):
                 snaps = execute_sequence(sequence, timeout=timeout)
