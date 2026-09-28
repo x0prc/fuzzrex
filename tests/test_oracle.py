@@ -276,3 +276,46 @@ def test_iterations_validation():
     orch, _ = _orchestrator_mock()
     with pytest.raises(ValueError, match="iterations"):
         run_joint_search(orch, [], {"a": 1}, iterations=0)
+
+
+# --- Redirect handling ---
+
+
+def test_login_redirect_vs_success_is_auth_boundary():
+    planned = [_request("GET /secret")]
+    base = [_snap(302)]
+    base[0] = ResponseSnapshot(302, None, "", frozenset(), location="login.php")
+    divergences = compare_sequences(planned, base, [_snap(200)])
+    assert divergences[0].kind == "auth-boundary"
+    assert "bypassed" in divergences[0].detail
+
+
+def test_success_vs_login_redirect_is_auth_boundary():
+    planned = [_request("GET /secret")]
+    var = [ResponseSnapshot(302, None, "", frozenset(), location="/login.php")]
+    divergences = compare_sequences(planned, [_snap(200)], var)
+    assert divergences[0].kind == "auth-boundary"
+    assert "required" in divergences[0].detail
+
+
+def test_non_login_redirect_is_plain_status_change():
+    planned = [_request("GET /moved")]
+    base = [ResponseSnapshot(302, None, "", frozenset(), location="/elsewhere")]
+    divergences = compare_sequences(planned, base, [_snap(200)])
+    assert divergences[0].kind == "status"
+
+
+@patch("fuzzrex.oracle.requests.request")
+def test_send_request_does_not_follow_redirects(mock_request):
+    mock_request.return_value = _response(302, None)
+    send_request(_request())
+    assert mock_request.call_args.kwargs["allow_redirects"] is False
+
+
+def test_snapshot_captures_location_header():
+    from requests.structures import CaseInsensitiveDict
+
+    response = _response(302, None)
+    response.headers = CaseInsensitiveDict({"Location": "../../login.php"})
+    snap = snapshot_response(response)
+    assert snap.location == "../../login.php"

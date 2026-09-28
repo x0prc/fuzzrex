@@ -124,3 +124,45 @@ def test_fuzz_value_defaults_to_string():
 @pytest.mark.parametrize("schema", [{}, {"type": "unknown"}])
 def test_fuzz_value_unknown_type_is_string(schema):
     assert isinstance(fuzz_value(schema, rng=random.Random(0)), str)
+
+
+# --- INI documents ---
+
+
+def test_dump_and_load_ini_roundtrip(tmp_path):
+    path = tmp_path / "app.ini"
+    document = {
+        "auth.anonymous": {"enabled": False},
+        "server": {"port": 3000, "host": "127.0.0.1"},
+    }
+    dump_document(document, path)
+    assert load_document(path) == {
+        "auth.anonymous": {"enabled": False},
+        "server": {"port": 3000, "host": "127.0.0.1"},
+    }
+
+
+def test_load_ini_coerces_scalars(tmp_path):
+    path = tmp_path / "flags.ini"
+    path.write_text("[main]\nenabled = TRUE\ncount = 42\nname = yes sir\n")
+    assert load_document(path) == {
+        "main": {"enabled": True, "count": 42, "name": "yes sir"},
+    }
+
+
+def test_load_ini_skips_comments_and_keeps_headerless_keys(tmp_path):
+    path = tmp_path / "c.ini"
+    path.write_text("; comment\n# also comment\nroot = 1\n[a]\nb = 2\n")
+    assert load_document(path) == {"": {"root": 1}, "a": {"b": 2}}
+
+
+def test_dump_ini_rejects_non_mapping_section(tmp_path):
+    path = tmp_path / "bad.ini"
+    with pytest.raises(ValueError, match="mapping"):
+        dump_document({"a": ["not", "a", "mapping"]}, path)
+
+
+def test_bools_render_lowercase_in_ini(tmp_path):
+    path = tmp_path / "b.ini"
+    dump_document({"s": {"flag": True}}, path)
+    assert "flag = true" in path.read_text()

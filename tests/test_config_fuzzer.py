@@ -95,3 +95,31 @@ def test_config_fuzzer_still_uses_mutate_config(tmp_path: Path):
     path.write_text(yaml.safe_dump({"debug": False, "port": 80}))
     variants = ConfigFuzzer(path).generate_variants(count=10, seed=3)
     assert any(v != {"debug": False, "port": 80} for v in variants)
+
+
+def test_mutate_config_enum_stays_in_vocabulary():
+    import random
+
+    baseline = {"disable_authentication": False, "level": "low"}
+    enums = {"level": ["low", "medium", "high", "impossible"]}
+    rng = random.Random(0)
+    for _ in range(100):
+        variant = mutate_config(baseline, rng, enums=enums)
+        if variant["level"] != baseline["level"]:
+            assert variant["level"] in enums["level"]
+        else:
+            # the other leaf (bool flip / null / delete) was chosen instead
+            assert "disable_authentication" in variant or variant["level"] == "low"
+
+
+def test_mutate_config_enum_applies_to_nested_keys():
+    import random
+
+    baseline = {"server": {"log_level": "info", "port": 8080}}
+    enums = {"log_level": ["debug", "info", "error"]}
+    rng = random.Random(1)
+    for _ in range(60):
+        variant = mutate_config(baseline, rng, enums=enums)
+        server = variant.get("server")
+        if isinstance(server, dict) and "log_level" in server:
+            assert server["log_level"] in enums["log_level"]
