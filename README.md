@@ -7,8 +7,10 @@ A CLI tool that fuzzes REST APIs from their OpenAPI spec and mutates configurati
 ## Features
 
 1. **API fuzzing** — loads an OpenAPI spec (JSON/YAML), generates type-aware request values (including out-of-range boundaries), routes parameters correctly (path/query/header/cookie/body), carries state across requests, and reports 5xx responses.
-2. **Config fuzzing** — mutates JSON/YAML configs (typed value flips, null injection, key deletion, structure damage) and writes reproducible variants to disk.
-3. **Auth** — bearer-token auth on the CLI; OAuth2 client-credentials available via the Python API.
+2. **Config fuzzing** — mutates JSON/YAML/INI configs (typed value flips, null injection, key deletion, structure damage; enum-constrained keys stay in their vocabulary) and writes reproducible variants to disk.
+3. **Differential oracle** — replays one planned request sequence under two config cells and flags security-relevant divergence only: `auth-boundary` (401/403 or redirect-to-login flips), `info-leak`, `server-error`, `status`, `transport`. Redirects are not followed, so login redirects are compared raw.
+4. **Joint Config×API search** — feedback loop that mutates the config, probes the API, and grows from divergent cells.
+5. **Baseline runner** — replays Schemathesis per config cell for the single-cell comparison arm.
 
 ## Installation
 
@@ -95,7 +97,9 @@ divergences = differential_probe(
 ### Joint search
 
 Alternate config mutation and API probing; divergent cells become the next
-mutation base (with periodic restarts to the baseline for diversity):
+mutation base (with periodic restarts to the baseline for diversity).
+Constrain enum-like keys with `enums` so mutation stays inside the
+allowed vocabulary:
 
 ```python
 from fuzzrex.oracle import run_joint_search
@@ -106,6 +110,7 @@ results = run_joint_search(
     sequence=sequence,
     iterations=20,
     seed=42,
+    enums={"log_level": ["debug", "info", "error"]},
 )
 for cell in results:
     print(cell.config, cell.divergences)
@@ -143,6 +148,33 @@ On the demo API the contrast is already visible: across the same
 config cells the baseline reports 0 findings while joint search finds
 `info-leak` and `auth-boundary` divergences — config-gated issues that
 single-cell API fuzzing does not observe.
+
+### Real SUT examples
+
+`examples/` bundles ready-to-run fixtures for third-party targets:
+
+| SUT | Config model | Knobs | Health |
+|---|---|---|---|
+| `demo-api` | JSON sidecar | `require_auth`, `debug` | `/health` |
+| `dvwa` | PHP shim overlays `matrix.json` | `disable_authentication`, `default_security_level` (enum) | `/vulnerabilities/api/v2/health/ping` |
+| `grafana` | `grafana.ini` bind-mount | `[auth.anonymous] enabled` | `/api/health` |
+
+```bash
+docker compose -f examples/dvwa/compose.yml up -d
+docker compose -f examples/grafana/compose.yml up -d
+```
+
+Joint-search smoke results (seed 42, local run):
+
+| SUT | Divergent cells | Kinds |
+|---|---|---|
+| dvwa | 4/8 | `auth-boundary` (302→200 on session-gated pages) |
+| grafana | 2/6 | `auth-boundary` + `info-leak` (401→200 on `/api/search` etc.) |
+
+Notes: DVWA's stateless v2 API ignores the security-level knob, so its
+fixture spec also carries the session-gated pages where
+`disable_authentication` actually shows. Grafana's spec is a
+probe-verified subset of 9 endpoints.
 
 ## Development
 
