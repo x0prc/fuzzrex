@@ -176,6 +176,26 @@ fixture spec also carries the session-gated pages where
 `disable_authentication` actually shows. Grafana's spec is a
 probe-verified subset of 9 endpoints.
 
+### Phase 1: joint vs baseline
+
+`fuzzrex.experiments.run_comparison` runs both arms under matched
+seeds — joint search versus Schemathesis once per cell of the static
+config grid — and emits a JSON summary (written to `findings/phase1/`,
+gitignored). Three seeds, 8 joint iterations/seed, 5 examples/op for
+the baseline:
+
+| SUT | Grid | Joint (cells/seed) | Joint kinds | Baseline (findings/seed) | Unique baseline findings |
+|---|---|---|---|---|---|
+| dvwa | 8 cells | 3.3 | `auth-boundary` | 40 (5 per cell, identical) | 2 — config-independent |
+| grafana | 2 cells | 3.3 | `auth-boundary` + `info-leak` | 0 | 0 |
+
+The baseline arm finds generic fuzzing bugs (DVWA: fuzzed payloads
+cause 5xx and undocumented statuses on the health endpoints) but they
+are the same in every cell — per-cell API fuzzing is config-blind and
+cannot observe the auth gating. Joint search's findings are exactly
+the config-gated behavior difference. Results are deterministic across
+runs under fixed seeds.
+
 ## Development
 
 ```bash
