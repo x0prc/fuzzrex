@@ -156,10 +156,23 @@ def test_load_ini_skips_comments_and_keeps_headerless_keys(tmp_path):
     assert load_document(path) == {"": {"root": 1}, "a": {"b": 2}}
 
 
-def test_dump_ini_rejects_non_mapping_section(tmp_path):
-    path = tmp_path / "bad.ini"
-    with pytest.raises(ValueError, match="mapping"):
-        dump_document({"a": ["not", "a", "mapping"]}, path)
+def test_dump_ini_drops_unrepresentable_sections(tmp_path):
+    path = tmp_path / "mutated.ini"
+    dump_document({"a": None, "b": "fuzzed", "server": {"port": 80}}, path)
+    text = path.read_text()
+    assert "[a]" not in text
+    assert "[b]" not in text
+    assert "[server]" in text
+    assert "port = 80" in text
+
+
+def test_dump_ini_skips_unrepresentable_values(tmp_path):
+    path = tmp_path / "mutated.ini"
+    dump_document({"s": {"good": 1, "gone": None, "nested": {"x": 1}}}, path)
+    text = path.read_text()
+    assert "good = 1" in text
+    assert "gone" not in text
+    assert "nested" not in text
 
 
 def test_bools_render_lowercase_in_ini(tmp_path):
