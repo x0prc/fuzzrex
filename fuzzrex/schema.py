@@ -79,16 +79,23 @@ def _coerce_scalar(value: str) -> Any:
 
 
 def dump_ini(document: dict[str, dict[str, Any]], path: str | Path) -> None:
-    """Write {section: {key: value}} as INI; booleans become lowercase strings."""
+    """Write {section: {key: value}} as INI; booleans become lowercase strings.
+
+    Mutations that INI cannot represent are dropped: a null or non-mapping
+    section becomes an absent section (service default), and null or
+    non-scalar values are skipped rather than rendered as junk strings.
+    """
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     for section, values in document.items():
+        if not isinstance(values, dict):
+            continue
         if section:
             lines.append(f"[{section}]")
-        if not isinstance(values, dict):
-            raise ValueError(f"INI section {section!r} must map to a mapping")
         for key, value in values.items():
+            if value is None or isinstance(value, (dict, list)):
+                continue
             rendered = str(value).lower() if isinstance(value, bool) else str(value)
             lines.append(f"{key} = {rendered}")
         lines.append("")
