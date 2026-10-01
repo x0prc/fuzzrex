@@ -8,6 +8,7 @@ sequence.
 from __future__ import annotations
 
 import random
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -271,7 +272,19 @@ class CellResult:
     divergences: tuple[Divergence, ...]
 
 
-def run_joint_search(
+@dataclass(frozen=True)
+class SearchTrace:
+    """Full record of one joint-search run, divergent or not."""
+
+    divergent_cells: tuple[CellResult, ...]
+    cells_visited: int
+    cells_unhealthy: int
+    first_divergence_iteration: int | None
+    first_divergence_s: float | None
+    elapsed_s: float
+
+
+def run_joint_search_traced(
     orchestrator: DockerComposeOrchestrator,
     baseline_config: Any,
     sequence: Sequence[HttpRequest],
@@ -280,14 +293,19 @@ def run_joint_search(
     seed: int | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     enums: dict[str, Any] | None = None,
-) -> list[CellResult]:
-    """Alternate config mutation and API probing; return cells with security-relevant divergence.
+    feedback: bool = True,
+) -> SearchTrace:
+    """Alternate config mutation and API probing; trace the whole run.
 
-    Baseline snapshots are recorded once. Each iteration mutates a config
-    (starting from baseline, then from the last divergent cell), replays the
-    fixed request sequence under it, and diffs against baseline. Cells that
-    fail to become healthy are skipped. `enums` constrains named keys to
-    their allowed values during mutation.
+    Baseline snapshots are recorded once. Each iteration mutates a config,
+    replays the fixed request sequence under it, and diffs against
+    baseline. Cells that fail to become healthy are counted and skipped.
+
+    `feedback=True` grows the mutation base from divergent cells (with
+    periodic restarts to the baseline); `feedback=False` is the ablation
+    arm -- every iteration mutates the baseline independently, so no
+    divergence information ever influences where the search goes.
+    `enums` constrains named keys to their allowed values during mutation.
     """
     if iterations < 1:
         raise ValueError("iterations must be >= 1")
@@ -298,6 +316,10 @@ def run_joint_search(
 
     mutation_base = baseline_config
     results: list[CellResult] = []
+    visited = unhealthy = 0
+    first_iteration: int | None = None
+    first_at: float | None = None
+    started = time.monotonic()
 
     for index in range(iterations):
         variant = mutate_config(mutation_base, rng, enums=enums)
@@ -305,13 +327,51 @@ def run_joint_search(
             with configured_service(orchestrator, variant):
                 snaps = execute_sequence(sequence, timeout=timeout)
         except OrchestratorError:
+            unhealthy += 1
             continue
 
+        visited += 1
         divergences = compare_sequences(sequence, baseline_snaps, snaps)
         if divergences:
             results.append(CellResult(variant, tuple(divergences)))
-            mutation_base = variant
-        elif index % RESTART_EVERY == RESTART_EVERY - 1:
+            if first_iteration is None:
+                first_iteration = index
+                first_at = time.monotonic() - started
+            if feedback:
+                mutation_base = variant
+        elif feedback and index % RESTART_EVERY == RESTART_EVERY - 1:
             mutation_base = baseline_config
 
-    return results
+    return SearchTrace(
+        divergent_cells=tuple(results),
+        cells_visited=visited,
+        cells_unhealthy=unhealthy,
+        first_divergence_iteration=first_iteration,
+        first_divergence_s=first_at,
+        elapsed_s=time.monotonic() - started,
+    )
+
+
+def run_joint_search(
+    orchestrator: DockerComposeOrchestrator,
+    baseline_config: Any,
+    sequence: Sequence[HttpRequest],
+    *,
+    iterations: int = 20,
+    seed: int | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+    enums: dict[str, Any] | None = None,
+    feedback: bool = True,
+) -> list[CellResult]:
+    """Run the joint search and return only the divergent cells (see `run_joint_search_traced`)."""
+    trace = run_joint_search_traced(
+        orchestrator,
+        baseline_config,
+        sequence,
+        iterations=iterations,
+        seed=seed,
+        timeout=timeout,
+        enums=enums,
+        feedback=feedback,
+    )
+    return list(trace.divergent_cells)
