@@ -15,6 +15,7 @@ from fuzzrex.oracle import (
     execute_sequence,
     is_sensitive_key,
     run_joint_search,
+    run_joint_search_traced,
     send_request,
     snapshot_response,
 )
@@ -276,6 +277,56 @@ def test_iterations_validation():
     orch, _ = _orchestrator_mock()
     with pytest.raises(ValueError, match="iterations"):
         run_joint_search(orch, [], {"a": 1}, iterations=0)
+
+
+@patch("fuzzrex.oracle.mutate_config")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_feedback_false_always_mutates_baseline(mock_cm, mock_execute, mock_mutate):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+    mock_execute.side_effect = [[_snap(200)]] + [[_snap(401)]] * 3
+    baseline_config = {"debug": False}
+    mock_mutate.return_value = {"debug": True}
+
+    planned = [_request("GET /admin")]
+    trace = run_joint_search_traced(
+        orch, baseline_config, planned, iterations=3, seed=5, feedback=False
+    )
+
+    assert len(trace.divergent_cells) == 3
+    # every iteration mutated the baseline, never a divergent cell
+    for call in mock_mutate.call_args_list:
+        assert call.args[0] is baseline_config
+
+
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_traced_records_metrics(mock_cm, mock_execute):
+    from fuzzrex.orchestrator import OrchestratorError
+
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+    mock_execute.side_effect = [[_snap(200)], [_snap(200)], [_snap(401)]]
+
+    planned = [_request("GET /admin")]
+    enters = {"count": 0}
+
+    def enter(_self=None):
+        enters["count"] += 1
+        if enters["count"] == 2:
+            raise OrchestratorError("unhealthy")
+        return orch
+
+    mock_cm.return_value.__enter__ = MagicMock(side_effect=enter)
+
+    trace = run_joint_search_traced(orch, {"debug": False}, planned, iterations=3, seed=1)
+
+    assert trace.cells_visited == 2  # one unhealthy skipped
+    assert trace.cells_unhealthy == 1
+    assert trace.first_divergence_iteration == 2  # second healthy cell diverged
+    assert trace.first_divergence_s is not None
+    assert trace.elapsed_s >= trace.first_divergence_s
 
 
 # --- Redirect handling ---

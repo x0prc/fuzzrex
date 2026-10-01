@@ -1,8 +1,15 @@
 from unittest.mock import MagicMock, patch
 
 from fuzzrex.baseline import BaselineFinding, BaselineResult
-from fuzzrex.experiments import ComparisonResult, SeedResult, config_grid, run_comparison
-from fuzzrex.oracle import CellResult, Divergence
+from fuzzrex.experiments import (
+    ArmStats,
+    ComparisonResult,
+    JointArm,
+    SeedResult,
+    config_grid,
+    run_comparison,
+)
+from fuzzrex.oracle import CellResult, Divergence, SearchTrace
 
 
 def test_config_grid_is_cartesian_product():
@@ -16,9 +23,19 @@ def test_config_grid_single_domain():
     assert config_grid({"flag": [True, False]}) == [{"flag": True}, {"flag": False}]
 
 
-def _cell() -> CellResult:
-    div = Divergence("GET /x", "auth-boundary", "bypassed", 302, 200)
-    return CellResult({"flag": True}, (div,))
+def _trace(divergent: int, unhealthy: int = 0, first_iter: int | None = None) -> SearchTrace:
+    cells = tuple(
+        CellResult({"flag": True}, (Divergence("GET /x", "auth-boundary", "bypassed", 302, 200),))
+        for _ in range(divergent)
+    )
+    return SearchTrace(
+        divergent_cells=cells,
+        cells_visited=5,
+        cells_unhealthy=unhealthy,
+        first_divergence_iteration=first_iter,
+        first_divergence_s=1.5 if first_iter is not None else None,
+        elapsed_s=9.0,
+    )
 
 
 def _baseline(config, findings_count):
@@ -31,14 +48,19 @@ def _baseline(config, findings_count):
 
 
 @patch("fuzzrex.experiments.run_baseline_matrix")
-@patch("fuzzrex.experiments.run_joint_search")
-def test_run_comparison_aggregates_both_arms(mock_joint, mock_baseline, tmp_path):
+@patch("fuzzrex.experiments.run_joint_search_traced")
+def test_run_comparison_runs_all_arms_and_baseline(mock_traced, mock_baseline, tmp_path):
     spec = tmp_path / "openapi.json"
     spec.write_text(
         '{"openapi": "3.0.0", "paths": '
         '{"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}}'
     )
-    mock_joint.side_effect = [[_cell()], []]
+    mock_traced.side_effect = [
+        _trace(1, first_iter=4),
+        _trace(0, unhealthy=1),
+        _trace(0),
+        _trace(2, first_iter=0),
+    ]
     mock_baseline.side_effect = [
         [_baseline({"flag": False}, 0), _baseline({"flag": True}, 1)],
         [_baseline({"flag": False}, 0), _baseline({"flag": True}, 0)],
@@ -46,7 +68,7 @@ def test_run_comparison_aggregates_both_arms(mock_joint, mock_baseline, tmp_path
 
     orch = MagicMock()
     orch.base_url = "http://sut.test"
-    seen: list[SeedResult] = []
+    seeds: list[SeedResult] = []
     result = run_comparison(
         orch,
         {"flag": False},
@@ -57,24 +79,59 @@ def test_run_comparison_aggregates_both_arms(mock_joint, mock_baseline, tmp_path
         joint_iterations=3,
         baseline_max_examples=2,
         enums={"flag": [True, False]},
-        on_seed=seen.append,
+        on_seed=seeds.append,
     )
 
     assert isinstance(result, ComparisonResult)
     assert result.name == "sut-x"
-    assert len(seen) == 2
-    assert result.mean_joint_cells == 0.5
-    assert result.total_joint_kinds == {"auth-boundary": 1}
-    # seed 7: 0+1 findings; seed 9: 0+0
+    assert len(seeds) == 2
+
+    # both joint arms ran per seed, ablation second
+    assert [c.kwargs["feedback"] for c in mock_traced.call_args_list] == [
+        True, False, True, False,
+    ]
+    assert mock_traced.call_args_list[0].kwargs["iterations"] == 3
+    assert mock_traced.call_args_list[0].kwargs["enums"] == {"flag": [True, False]}
+
+    # arm aggregates: joint 1 then 0 cells; ablation 0 then 2
+    assert result.mean_cells("joint") == 0.5
+    assert result.mean_cells("joint-no-feedback") == 1.0
+    assert result.total_kinds("joint") == {"auth-boundary": 1}
+    assert result.total_kinds("joint-no-feedback") == {"auth-boundary": 2}
+    assert result.mean_first_divergence_iteration("joint") == 4.0
+    assert result.mean_first_divergence_iteration("joint-no-feedback") == 0.0
+
+    # baseline: seed 7 -> 1 finding, seed 9 -> 0
     assert result.mean_baseline_findings == 0.5
     assert result.seeds[0].baseline_per_cell == [0, 1]
-    # the one finding in seed 7 appears in the unique set
     assert result.baseline_unique_signatures == ["server error (POST /x)"]
 
-    # joint arm receives the planned sequence and enums
-    joint_kwargs = mock_joint.call_args_list[0].kwargs
-    assert joint_kwargs["iterations"] == 3
-    assert joint_kwargs["enums"] == {"flag": [True, False]}
+
+@patch("fuzzrex.experiments.run_baseline_matrix")
+@patch("fuzzrex.experiments.run_joint_search_traced")
+def test_run_comparison_can_skip_baseline(mock_traced, mock_baseline, tmp_path):
+    spec = tmp_path / "openapi.json"
+    spec.write_text(
+        '{"openapi": "3.0.0", "paths": '
+        '{"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}}'
+    )
+    mock_traced.return_value = _trace(0)
+
+    orch = MagicMock()
+    orch.base_url = "http://sut.test"
+    result = run_comparison(
+        orch,
+        {"flag": False},
+        str(spec),
+        [{"flag": False}],
+        seeds=(0,),
+        arms=(JointArm("joint"),),
+        run_baseline=False,
+    )
+
+    mock_baseline.assert_not_called()
+    assert result.mean_baseline_findings == 0.0
+    assert result.seeds[0].baseline_per_cell == []
 
 
 def test_comparison_result_to_dict_is_json_ready():
@@ -82,9 +139,26 @@ def test_comparison_result_to_dict_is_json_ready():
 
     result = ComparisonResult(
         name="x",
-        seeds=[SeedResult(1, 2, {"status": 4}, 0, [0, 0])],
+        seeds=[
+            SeedResult(
+                seed=1,
+                arms={
+                    "joint": ArmStats(
+                        divergent_cells=2,
+                        kinds={"status": 4},
+                        cells_visited=10,
+                        cells_unhealthy=1,
+                        first_divergence_iteration=3,
+                        first_divergence_s=2.5,
+                        elapsed_s=30.0,
+                    )
+                },
+            )
+        ],
     )
     payload = json.loads(json.dumps(result.to_dict()))
-    assert payload["mean_joint_divergent_cells"] == 2.0
-    assert payload["joint_kinds"] == {"status": 4}
-    assert payload["seeds"][0]["seed"] == 1
+    assert payload["arms"]["joint"]["mean_divergent_cells"] == 2.0
+    assert payload["arms"]["joint"]["kinds"] == {"status": 4}
+    assert payload["arms"]["joint"]["mean_first_divergence_iteration"] == 3.0
+    assert payload["seeds"][0]["arms"]["joint"]["cells_unhealthy"] == 1
+    assert payload["baseline_unique_findings"] == 0
