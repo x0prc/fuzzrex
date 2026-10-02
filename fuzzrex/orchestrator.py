@@ -15,6 +15,8 @@ from fuzzrex.schema import dump_document, load_document
 
 DEFAULT_COMPOSE = ("docker", "compose")
 DEFAULT_HEALTH_TIMEOUT = 60.0
+DAEMON_WAIT_TIMEOUT = 90.0
+DAEMON_POLL_INTERVAL = 2.0
 DEFAULT_REQUEST_TIMEOUT = 10.0
 
 
@@ -99,13 +101,45 @@ class DockerComposeOrchestrator:
 
     def _compose(self, *args: str) -> None:
         command = [*self.compose_cmd, "-f", str(self.compose_file), *args]
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-        except FileNotFoundError as exc:
-            raise OrchestratorError(f"Compose command not found: {self.compose_cmd[0]}") from exc
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or exc.stdout or str(exc)).strip()
-            raise OrchestratorError(f"`{' '.join(command)}` failed: {detail}") from exc
+        for attempt in (0, 1):
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True)
+                return
+            except FileNotFoundError as exc:
+                raise OrchestratorError(
+                    f"Compose command not found: {self.compose_cmd[0]}"
+                ) from exc
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or exc.stdout or str(exc)).strip()
+                if attempt == 0 and self._is_daemon_outage(detail) and self._wait_for_daemon():
+                    continue
+                raise OrchestratorError(f"`{' '.join(command)}` failed: {detail}") from exc
+
+    def _is_daemon_outage(self, detail: str) -> bool:
+        lowered = detail.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "failed to connect to the docker api",
+                "cannot connect to the docker",
+                "is the docker daemon running",
+            )
+        )
+
+    def _wait_for_daemon(self, timeout: float | None = None) -> bool:
+        """Poll until the daemon answers again; True if it came back."""
+        if timeout is None:
+            timeout = DAEMON_WAIT_TIMEOUT
+        probe = [self.compose_cmd[0], "info"]
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                if subprocess.run(probe, capture_output=True).returncode == 0:
+                    return True
+            except FileNotFoundError:
+                return False
+            time.sleep(DAEMON_POLL_INTERVAL)
+        return False
 
 
 @contextmanager
