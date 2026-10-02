@@ -91,6 +91,42 @@ def test_missing_binary_raises(mock_run, project: tuple[Path, Path]):
         orch.restart()
 
 
+DAEMON_ERROR = "failed to connect to the docker API at unix:///docker.sock: no such file"
+
+
+@patch("fuzzrex.orchestrator.subprocess.run")
+def test_compose_retries_after_daemon_blip(mock_run, project: tuple[Path, Path]):
+    mock_run.side_effect = [
+        subprocess.CalledProcessError(1, ["docker", "compose"], stderr=DAEMON_ERROR),
+        MagicMock(returncode=0),  # docker info probe: daemon back
+        MagicMock(returncode=0),  # retried compose command
+    ]
+    orch = make_orchestrator(*project)
+    orch.restart()
+    assert mock_run.call_count == 3
+    assert mock_run.call_args_list[1].args[0] == ["docker", "info"]
+
+
+@patch("fuzzrex.orchestrator.DAEMON_WAIT_TIMEOUT", 0)
+@patch("fuzzrex.orchestrator.subprocess.run")
+def test_compose_raises_when_daemon_never_returns(mock_run, project: tuple[Path, Path]):
+    mock_run.side_effect = subprocess.CalledProcessError(
+        1, ["docker", "compose"], stderr=DAEMON_ERROR
+    )
+    orch = make_orchestrator(*project)
+    with pytest.raises(OrchestratorError, match="docker API"):
+        orch.restart()
+
+
+@patch("fuzzrex.orchestrator.subprocess.run")
+def test_non_daemon_failure_does_not_probe(mock_run, project: tuple[Path, Path]):
+    mock_run.side_effect = subprocess.CalledProcessError(1, ["docker", "compose"], stderr="boom")
+    orch = make_orchestrator(*project)
+    with pytest.raises(OrchestratorError, match="boom"):
+        orch.restart()
+    assert mock_run.call_count == 1
+
+
 @patch("fuzzrex.orchestrator.requests.get")
 @patch("fuzzrex.orchestrator.subprocess.run")
 def test_configured_service_applies_and_restores(
