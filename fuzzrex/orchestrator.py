@@ -15,7 +15,7 @@ from fuzzrex.schema import dump_document, load_document
 
 DEFAULT_COMPOSE = ("docker", "compose")
 DEFAULT_HEALTH_TIMEOUT = 60.0
-DAEMON_WAIT_TIMEOUT = 90.0
+DAEMON_WAIT_TIMEOUT = 300.0
 DAEMON_POLL_INTERVAL = 2.0
 DEFAULT_REQUEST_TIMEOUT = 10.0
 
