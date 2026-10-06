@@ -1,0 +1,92 @@
+name: Phase 1 campaign
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: SUT to campaign
+        type: choice
+        default: all
+        options: [all, dvwa, grafana]
+
+concurrency:
+  group: phase1-campaign
+
+jobs:
+  campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sut: dvwa
+            health: http://127.0.0.1:4280/login.php
+          - sut: grafana
+            health: http://127.0.0.1:3000/api/health
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[baseline]"
+      - name: Warm up SUT
+        if: ${{ inputs.target == 'all' || inputs.target == matrix.sut }}
+        run: |
+          docker compose -f examples/${{ matrix.sut }}/compose.yml up -d
+          for i in $(seq 1 60); do
+            if curl -sf "${{ matrix.health }}" > /dev/null; then
+              echo "SUT healthy after $((i * 5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::SUT did not become healthy in 300s"
+          docker compose -f examples/${{ matrix.sut }}/compose.yml logs | tail -50
+          exit 1
+      - name: Run campaign
+        if: ${{ inputs.target == 'all' || inputs.target == matrix.sut }}
+        run: python examples/phase1_campaign.py ${{ matrix.sut }}
+      - name: Upload checkpoint
+        if: ${{ always() && (inputs.target == 'all' || inputs.target == matrix.sut) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: findings-${{ matrix.sut }}
+          path: findings/phase1/${{ matrix.sut }}.json
+          if-no-files-found: ignore
+
+  analyze:
+    needs: campaign
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e .
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          pattern: findings-*
+          path: findings/phase1
+          merge-multiple: true
+      - name: Summarize
+        run: |
+          python -m fuzzrex.analysis findings/phase1 | tee analysis.txt
+          {
+            echo "### Phase 1 campaign results"
+            echo '```'
+            cat analysis.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-analysis
+          path: |
+            findings/phase1/per_seed.csv
+            analysis.txt
