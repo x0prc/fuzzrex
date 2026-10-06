@@ -145,7 +145,7 @@ def main(target: str) -> None:
               flush=True)
     print(f"  baseline: {payload['mean_baseline_findings']:.1f} findings/seed, "
           f"{payload['baseline_unique_findings']} unique", flush=True)
-    print(f"  wrote {path} ({payload['budget']['elapsed_s']}s)", flush=True)
+    print(f"  wrote {path} ({budget['elapsed_s']}s)", flush=True)
 
 
 if __name__ == "__main__":
