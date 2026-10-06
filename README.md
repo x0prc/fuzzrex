@@ -164,37 +164,52 @@ docker compose -f examples/dvwa/compose.yml up -d
 docker compose -f examples/grafana/compose.yml up -d
 ```
 
-Joint-search smoke results (seed 42, local run):
-
-| SUT | Divergent cells | Kinds |
-|---|---|---|
-| dvwa | 4/8 | `auth-boundary` (302→200 on session-gated pages) |
-| grafana | 2/6 | `auth-boundary` + `info-leak` (401→200 on `/api/search` etc.) |
-
 Notes: DVWA's stateless v2 API ignores the security-level knob, so its
 fixture spec also carries the session-gated pages where
 `disable_authentication` actually shows. Grafana's spec is a
 probe-verified subset of 9 endpoints.
 
-### Phase 1: joint vs baseline
+### Phase 1: joint vs baseline vs ablation
 
-`fuzzrex.experiments.run_comparison` runs both arms under matched
-seeds — joint search versus Schemathesis once per cell of the static
-config grid — and emits a JSON summary (written to `findings/phase1/`,
-gitignored). Three seeds, 8 joint iterations/seed, 5 examples/op for
-the baseline:
+`fuzzrex.experiments.run_comparison` runs three arms under matched
+seeds — joint search, the same search with the feedback loop disabled
+(ablation), and Schemathesis once per cell of the static config grid —
+and checkpoints a JSON summary per seed into `findings/phase1/`
+(gitignored). Campaign: 10 seeds x 30 iterations, 5 examples/op for
+the baseline (`examples/phase1_campaign.py`, crash-safe resume):
 
-| SUT | Grid | Joint (cells/seed) | Joint kinds | Baseline (findings/seed) | Unique baseline findings |
+| SUT | Grid | joint | joint-no-feedback | paired (sign-flip) | baseline |
 |---|---|---|---|---|---|
-| dvwa | 8 cells | 3.3 | `auth-boundary` | 40 (5 per cell, identical) | 2 — config-independent |
-| grafana | 2 cells | 3.3 | `auth-boundary` + `info-leak` | 0 | 0 |
+| dvwa | 8 cells | **11.20 ± 2.82** | 9.20 ± 3.19 | Δ=+2.00, p=0.13 | 41.6/seed → 3 unique |
+| grafana | 2 cells | 12.40 ± 2.80 | **14.80 ± 2.30** | Δ=−2.40, p=0.037 | 0 |
 
-The baseline arm finds generic fuzzing bugs (DVWA: fuzzed payloads
-cause 5xx and undocumented statuses on the health endpoints) but they
-are the same in every cell — per-cell API fuzzing is config-blind and
-cannot observe the auth gating. Joint search's findings are exactly
-the config-gated behavior difference. Results are deterministic across
-runs under fixed seeds.
+Reading the table:
+
+- **Baseline is config-blind**: DVWA's 41.6 findings/seed collapse to
+  3 unique signatures, identical in every cell — per-cell API fuzzing
+  cannot observe auth gating that only appears when the config flips.
+- **Feedback depends on config-space depth**: on DVWA's 2-knob space
+  growing from divergent cells helps (+2 cells/seed); on Grafana's
+  single knob it hurts (p=0.037) because exploiting a one-shot cell
+  mostly produces mutations that lose the divergence.
+- Cell counts are divergent *probes* (repeats of the same effective
+  config included); unique-effective-config counting is the planned
+  refinement.
+
+Analyze any campaign directory (stdlib only, exact paired sign-flip
+test):
+
+```bash
+python -m fuzzrex.analysis findings/phase1   # table + p-values + CSV
+```
+
+### Reproduce on GitHub Actions
+
+The full campaign runs on a 4-core runner (no local Docker needed):
+**Actions → Phase 1 campaign → Run workflow** (pick one SUT or both).
+Each SUT job checkpoints its JSON into an artifact even on failure,
+and the analyze job publishes the summary table to the workflow's
+step summary plus `phase1-analysis` (CSV + report).
 
 ## Development
 
