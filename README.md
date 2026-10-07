@@ -192,9 +192,11 @@ Reading the table:
   growing from divergent cells helps (+2 cells/seed); on Grafana's
   single knob it hurts (p=0.037) because exploiting a one-shot cell
   mostly produces mutations that lose the divergence.
-- Cell counts are divergent *probes* (repeats of the same effective
-  config included); unique-effective-config counting is the planned
-  refinement.
+- Cell counts in this table are divergent *probes* (pre-refinement
+  data); the metric now also records **unique effective configs**
+  (`unique_cells`, canonical-JSON dedupe — mutations never add keys,
+  so canonical form equals the on-disk cell). Definitive numbers
+  come from the next campaign run.
 
 Analyze any campaign directory (stdlib only, exact paired sign-flip
 test):
