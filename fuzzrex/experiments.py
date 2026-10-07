@@ -32,6 +32,7 @@ DEFAULT_ARMS = (JointArm("joint"), JointArm("joint-no-feedback", feedback=False)
 @dataclass
 class ArmStats:
     divergent_cells: int
+    unique_cells: int
     kinds: dict[str, int]
     cells_visited: int
     cells_unhealthy: int
@@ -58,6 +59,10 @@ class ComparisonResult:
 
     def mean_cells(self, arm: str) -> float:
         values = [s.arms[arm].divergent_cells for s in self.seeds if arm in s.arms]
+        return sum(values) / len(values) if values else 0.0
+
+    def mean_unique_cells(self, arm: str) -> float:
+        values = [s.arms[arm].unique_cells for s in self.seeds if arm in s.arms]
         return sum(values) / len(values) if values else 0.0
 
     def total_kinds(self, arm: str) -> dict[str, int]:
@@ -95,6 +100,7 @@ class ComparisonResult:
             "arms": {
                 arm: {
                     "mean_divergent_cells": self.mean_cells(arm),
+                    "mean_unique_cells": self.mean_unique_cells(arm),
                     "kinds": self.total_kinds(arm),
                     "mean_first_divergence_iteration": (
                         self.mean_first_divergence_iteration(arm)
@@ -165,6 +171,7 @@ def run_comparison(
             )
             seed_result.arms[arm.name] = ArmStats(
                 divergent_cells=len(trace.divergent_cells),
+                unique_cells=trace.unique_cells,
                 kinds=dict(kinds),
                 cells_visited=trace.cells_visited,
                 cells_unhealthy=trace.cells_unhealthy,

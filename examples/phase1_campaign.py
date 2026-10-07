@@ -25,9 +25,17 @@ JOINT_ITERATIONS = 30
 
 
 def _seed_from_dict(data: dict) -> SeedResult:
+    arms = {}
+    for name, stats in data["arms"].items():
+        if "unique_cells" not in stats:
+            raise ValueError(
+                f"checkpoint for {data.get('seed')!r}/{name} predates unique_cells; "
+                "delete it and rerun (mixed metrics would corrupt the table)"
+            )
+        arms[name] = ArmStats(**stats)
     return SeedResult(
         seed=data["seed"],
-        arms={name: ArmStats(**stats) for name, stats in data["arms"].items()},
+        arms=arms,
         baseline_findings=data["baseline_findings"],
         baseline_per_cell=data["baseline_per_cell"],
         baseline_signatures=data["baseline_signatures"],
@@ -113,7 +121,7 @@ def main(target: str) -> None:
             _write_checkpoint(path, result, budget)
             seed_result = partial.seeds[0]
             parts = [
-                f"{arm}={stats.divergent_cells} cells "
+                f"{arm}={stats.divergent_cells} probes/{stats.unique_cells} unique "
                 f"(first@{stats.first_divergence_iteration}, "
                 f"visited={stats.cells_visited}, bad={stats.cells_unhealthy})"
                 for arm, stats in seed_result.arms.items()
@@ -139,7 +147,8 @@ def main(target: str) -> None:
     print(f"\n== {target} ==", flush=True)
     payload = result.to_dict()
     for arm, stats in payload["arms"].items():
-        print(f"  {arm}: {stats['mean_divergent_cells']:.1f} cells/seed "
+        print(f"  {arm}: {stats['mean_divergent_cells']:.1f} probes, "
+              f"{stats['mean_unique_cells']:.1f} unique cells/seed, "
               f"kinds={stats['kinds']} "
               f"first-divergence@iter={stats['mean_first_divergence_iteration']}",
               flush=True)

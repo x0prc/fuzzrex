@@ -20,6 +20,7 @@ from typing import Any
 
 ARM_METRICS = (
     "divergent_cells",
+    "unique_cells",
     "first_divergence_iteration",
     "first_divergence_s",
     "cells_visited",
@@ -34,6 +35,7 @@ class ArmSummary:
     n: int
     mean_cells: float
     std_cells: float
+    mean_unique_cells: float
     n_found: int
     mean_first_iteration: float | None
     mean_unhealthy: float
@@ -77,6 +79,7 @@ def summarize_arm(payload: dict[str, Any], arm: str) -> ArmSummary:
         n=len(rows),
         mean_cells=statistics.fmean(cells),
         std_cells=statistics.stdev(cells) if len(cells) > 1 else 0.0,
+        mean_unique_cells=statistics.fmean(r["unique_cells"] for r in rows),
         n_found=len(found),
         mean_first_iteration=statistics.fmean(found) if found else None,
         mean_unhealthy=statistics.fmean(r["cells_unhealthy"] for r in rows),
@@ -149,13 +152,14 @@ def render_report(payload: dict[str, Any]) -> str:
         f"== {name} ==  ({budget.get('seeds', '?')} seeds x "
         f"{budget.get('joint_iterations', '?')} iterations, "
         f"grid {budget.get('grid_cells', '?')} cells)",
-        f"{'arm':<24} {'cells/seed':>16} {'found':>7} {'first-div':>10} "
+        f"{'arm':<24} {'cells/seed':>16} {'unique':>8} {'found':>7} {'first-div':>10} "
         f"{'unhealthy':>10} {'sec/seed':>9}",
     ]
     for s in summaries:
         first = f"{s.mean_first_iteration:.1f}" if s.mean_first_iteration is not None else "-"
         lines.append(
             f"{s.arm:<24} {s.mean_cells:>10.2f} ±{s.std_cells:>4.2f} "
+            f"{s.mean_unique_cells:>8.2f} "
             f"{s.n_found:>3}/{s.n:<3} {first:>10} {s.mean_unhealthy:>10.1f} {s.mean_elapsed:>9.1f}"
         )
     if payload.get("seeds") and any("baseline_findings" in s for s in payload["seeds"]):

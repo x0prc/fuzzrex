@@ -7,6 +7,7 @@ sequence.
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from collections.abc import Mapping, Sequence
@@ -277,11 +278,17 @@ class SearchTrace:
     """Full record of one joint-search run, divergent or not."""
 
     divergent_cells: tuple[CellResult, ...]
+    unique_cells: int
     cells_visited: int
     cells_unhealthy: int
     first_divergence_iteration: int | None
     first_divergence_s: float | None
     elapsed_s: float
+
+
+def canonical_config(config: Any) -> str:
+    """Canonical form for deduplicating configs (mutations never add keys)."""
+    return json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def run_joint_search_traced(
@@ -344,6 +351,7 @@ def run_joint_search_traced(
 
     return SearchTrace(
         divergent_cells=tuple(results),
+        unique_cells=len({canonical_config(cell.config) for cell in results}),
         cells_visited=visited,
         cells_unhealthy=unhealthy,
         first_divergence_iteration=first_iteration,
