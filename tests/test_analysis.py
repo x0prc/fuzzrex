@@ -14,9 +14,10 @@ from fuzzrex.analysis import (
 
 
 def _payload() -> dict:
-    def arm(cells, first, unhealthy=0, elapsed=100.0):
+    def arm(cells, first, unhealthy=0, elapsed=100.0, unique=None):
         return {
             "divergent_cells": cells,
+            "unique_cells": cells if unique is None else unique,
             "kinds": {"auth-boundary": cells},
             "cells_visited": 30,
             "cells_unhealthy": unhealthy,
@@ -28,7 +29,7 @@ def _payload() -> dict:
     seeds = [
         {
             "seed": 0,
-            "arms": {"joint": arm(10, 3), "joint-no-feedback": arm(4, 5)},
+            "arms": {"joint": arm(10, 3, unique=8), "joint-no-feedback": arm(4, 5)},
             "baseline_findings": 40,
             "baseline_per_cell": [5, 5],
             "baseline_signatures": ["Server error (POST /x)"],
@@ -42,7 +43,7 @@ def _payload() -> dict:
         },
         {
             "seed": 2,
-            "arms": {"joint": arm(8, None), "joint-no-feedback": arm(4, 2, unhealthy=1)},
+            "arms": {"joint": arm(8, None, unique=7), "joint-no-feedback": arm(4, 2, unhealthy=1)},
             "baseline_findings": 38,
             "baseline_per_cell": [5, 4],
             "baseline_signatures": ["Server error (POST /x)"],
@@ -83,6 +84,7 @@ def test_summarize_arm_aggregates():
     assert summary.n == 3
     assert summary.mean_cells == pytest.approx(8.0)
     assert summary.std_cells > 0
+    assert summary.mean_unique_cells == pytest.approx(7.0)  # (8+6+7)/3
     assert summary.n_found == 2  # seed 2 has no divergence
     assert summary.mean_first_iteration == pytest.approx(1.5)
 
@@ -106,6 +108,8 @@ def test_paired_test_requires_three_pairs():
 def test_render_report_has_arms_and_paired_line():
     report = render_report(_payload())
     assert "joint-no-feedback" in report
+    assert "unique" in report  # dedup column
+    assert "7.00" in report  # joint mean unique cells
     assert "baseline" in report
     assert "paired joint vs joint-no-feedback" in report
     assert "Δ=+4.00" in report
@@ -125,6 +129,7 @@ def test_csv_roundtrip_and_load(tmp_path):
     rows = csv_path.read_text().splitlines()
     assert rows[0] == "sut,seed,arm,metric,value"
     assert "sut-x,0,joint,divergent_cells,10" in rows
+    assert "sut-x,0,joint,unique_cells,8" in rows
     assert "sut-x,0,baseline,findings,40" in rows
     # None first-divergence omitted
     assert not any(",first_divergence_iteration," in r and r.endswith(",") for r in rows)

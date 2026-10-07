@@ -329,6 +329,34 @@ def test_traced_records_metrics(mock_cm, mock_execute):
     assert trace.elapsed_s >= trace.first_divergence_s
 
 
+@patch("fuzzrex.oracle.mutate_config")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_trace_dedupes_repeat_configs(mock_cm, mock_execute, mock_mutate):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+    mock_execute.side_effect = [[_snap(200)]] + [[_snap(401)]] * 3
+    mock_mutate.side_effect = [{"debug": True}, {"debug": True}, {"debug": False}]
+
+    planned = [_request("GET /admin")]
+    trace = run_joint_search_traced(
+        orch, {"debug": False}, planned, iterations=3, seed=1, feedback=False
+    )
+
+    # three divergent probes but only two effective configs
+    assert len(trace.divergent_cells) == 3
+    assert trace.unique_cells == 2
+
+
+def test_canonical_config_is_key_order_independent():
+    from fuzzrex.oracle import canonical_config
+
+    assert canonical_config({"a": 1, "b": {"x": True}}) == canonical_config(
+        {"b": {"x": True}, "a": 1}
+    )
+    assert canonical_config({"a": 1}) != canonical_config({"a": 2})
+
+
 # --- Redirect handling ---
 
 

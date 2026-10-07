@@ -23,13 +23,19 @@ def test_config_grid_single_domain():
     assert config_grid({"flag": [True, False]}) == [{"flag": True}, {"flag": False}]
 
 
-def _trace(divergent: int, unhealthy: int = 0, first_iter: int | None = None) -> SearchTrace:
+def _trace(
+    divergent: int,
+    unhealthy: int = 0,
+    first_iter: int | None = None,
+    unique: int | None = None,
+) -> SearchTrace:
     cells = tuple(
         CellResult({"flag": True}, (Divergence("GET /x", "auth-boundary", "bypassed", 302, 200),))
         for _ in range(divergent)
     )
     return SearchTrace(
         divergent_cells=cells,
+        unique_cells=divergent if unique is None else unique,
         cells_visited=5,
         cells_unhealthy=unhealthy,
         first_divergence_iteration=first_iter,
@@ -56,10 +62,10 @@ def test_run_comparison_runs_all_arms_and_baseline(mock_traced, mock_baseline, t
         '{"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}}'
     )
     mock_traced.side_effect = [
-        _trace(1, first_iter=4),
+        _trace(1, first_iter=4, unique=1),
         _trace(0, unhealthy=1),
         _trace(0),
-        _trace(2, first_iter=0),
+        _trace(2, first_iter=0, unique=1),  # two probes, one effective config
     ]
     mock_baseline.side_effect = [
         [_baseline({"flag": False}, 0), _baseline({"flag": True}, 1)],
@@ -93,9 +99,12 @@ def test_run_comparison_runs_all_arms_and_baseline(mock_traced, mock_baseline, t
     assert mock_traced.call_args_list[0].kwargs["iterations"] == 3
     assert mock_traced.call_args_list[0].kwargs["enums"] == {"flag": [True, False]}
 
-    # arm aggregates: joint 1 then 0 cells; ablation 0 then 2
+    # arm aggregates: joint 1 then 0 probes; ablation 0 then 2 (1 unique)
     assert result.mean_cells("joint") == 0.5
     assert result.mean_cells("joint-no-feedback") == 1.0
+    # unique counts dedupe: ablation's 2 probes are 1 effective config
+    assert result.mean_unique_cells("joint") == 0.5
+    assert result.mean_unique_cells("joint-no-feedback") == 0.5
     assert result.total_kinds("joint") == {"auth-boundary": 1}
     assert result.total_kinds("joint-no-feedback") == {"auth-boundary": 2}
     assert result.mean_first_divergence_iteration("joint") == 4.0
@@ -145,6 +154,7 @@ def test_comparison_result_to_dict_is_json_ready():
                 arms={
                     "joint": ArmStats(
                         divergent_cells=2,
+                        unique_cells=1,
                         kinds={"status": 4},
                         cells_visited=10,
                         cells_unhealthy=1,
@@ -158,6 +168,7 @@ def test_comparison_result_to_dict_is_json_ready():
     )
     payload = json.loads(json.dumps(result.to_dict()))
     assert payload["arms"]["joint"]["mean_divergent_cells"] == 2.0
+    assert payload["arms"]["joint"]["mean_unique_cells"] == 1.0
     assert payload["arms"]["joint"]["kinds"] == {"status": 4}
     assert payload["arms"]["joint"]["mean_first_divergence_iteration"] == 3.0
     assert payload["seeds"][0]["arms"]["joint"]["cells_unhealthy"] == 1
