@@ -158,16 +158,25 @@ single-cell API fuzzing does not observe.
 | `demo-api` | JSON sidecar | `require_auth`, `debug` | `/health` |
 | `dvwa` | PHP shim overlays `matrix.json` | `disable_authentication`, `default_security_level` (enum) | `/vulnerabilities/api/v2/health/ping` |
 | `grafana` | `grafana.ini` bind-mount | `[auth.anonymous] enabled` | `/api/health` |
+| `crapi` | compose `.env` (recreate mode) | `ENABLE_SHELL_INJECTION`, `TLS_ENABLED` | `/identity/health_check` |
 
 ```bash
 docker compose -f examples/dvwa/compose.yml up -d
 docker compose -f examples/grafana/compose.yml up -d
+docker compose -f examples/crapi/compose.yml up -d
 ```
 
 Notes: DVWA's stateless v2 API ignores the security-level knob, so its
 fixture spec also carries the session-gated pages where
 `disable_authentication` actually shows. Grafana's spec is a
-probe-verified subset of 9 endpoints.
+probe-verified subset of 9 endpoints. crAPI's fixture is identity-only
+and probes `127.0.0.1:8080` directly: the public nginx injects
+`X-Forwarded-Host`, which makes `convert_video` answer 403 for every
+external caller, hiding the `ENABLE_SHELL_INJECTION` branch. Its spec is
+a probe-verified subset with chained requests (login token, upload →
+video id resolved per config cell at send time), and both knobs are
+probe-verified: shell-injection flips `convert_video` 500↔200, TLS flips
+every endpoint 200↔400.
 
 ### Phase 1: joint vs baseline vs ablation
 
@@ -197,6 +206,8 @@ Reading the table:
   (`unique_cells`, canonical-JSON dedupe — mutations never add keys,
   so canonical form equals the on-disk cell). Definitive numbers
   come from the next campaign run.
+- crAPI joins the campaign as a third SUT (4-cell grid:
+  shell-injection × TLS); its numbers come from the same run.
 
 Analyze any campaign directory (stdlib only, exact paired sign-flip
 test):
@@ -208,10 +219,10 @@ python -m fuzzrex.analysis findings/phase1   # table + p-values + CSV
 ### Reproduce on GitHub Actions
 
 The full campaign runs on a 4-core runner (no local Docker needed):
-**Actions → Phase 1 campaign → Run workflow** (pick one SUT or both).
-Each SUT job checkpoints its JSON into an artifact even on failure,
-and the analyze job publishes the summary table to the workflow's
-step summary plus `phase1-analysis` (CSV + report).
+**Actions → Phase 1 campaign → Run workflow** (pick one SUT or run all
+three). Each SUT job checkpoints its JSON into an artifact even on
+failure, and the analyze job publishes the summary table to the
+workflow's step summary plus `phase1-analysis` (CSV + report).
 
 ## Development
 
