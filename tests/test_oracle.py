@@ -161,6 +161,63 @@ def test_execute_sequence_handles_transport_error(mock_send):
     assert snaps[1].status_code is None
 
 
+@patch("fuzzrex.oracle.send_request")
+def test_execute_sequence_resolves_token_and_param_links(mock_send):
+    mock_send.side_effect = [
+        _response(200, {"token": "tok123"}),
+        _response(200, {"id": 7}),
+        _response(200, {"ok": True}),
+    ]
+    login = HttpRequest(method="POST", url="http://sut.test/login", label="POST /login")
+    upload = HttpRequest(
+        method="POST", url="http://sut.test/videos", label="POST /videos",
+        token_from="POST /login",
+    )
+    convert = HttpRequest(
+        method="GET", url="http://sut.test/convert", label="GET /convert",
+        token_from="POST /login",
+        param_from={"video_id": ("POST /videos", "id")},
+    )
+    execute_sequence([login, upload, convert])
+
+    sent_upload = mock_send.call_args_list[1].args[0]
+    assert sent_upload.headers["Authorization"] == "Bearer tok123"
+    sent_convert = mock_send.call_args_list[2].args[0]
+    assert sent_convert.headers["Authorization"] == "Bearer tok123"
+    assert sent_convert.params == {"video_id": 7}
+    # The planned instances stay untouched for cross-cell equality.
+    assert upload.headers == {}
+    assert convert.params == {}
+
+
+@patch("fuzzrex.oracle.send_request")
+def test_execute_sequence_missing_producer_sends_request_unchanged(mock_send):
+    mock_send.return_value = _response(200, {"ok": True})
+    orphan = HttpRequest(
+        method="GET", url="http://sut.test/convert", label="GET /convert",
+        param_from={"video_id": ("GET /missing", "id")},
+    )
+    execute_sequence([orphan])
+    sent = mock_send.call_args.args[0]
+    assert sent.params == {}
+    assert "Authorization" not in sent.headers
+
+
+@patch("fuzzrex.oracle.requests.request")
+def test_send_request_passes_files_and_drops_json(mock_request):
+    mock_request.return_value = _response(200, {"ok": True})
+    req = HttpRequest(
+        method="POST",
+        url="http://sut.test/upload",
+        body={"ignored": True},
+        files={"file": ("clip.mp4", b"\x00\x01", "video/mp4")},
+    )
+    send_request(req, timeout=3.0)
+    kwargs = mock_request.call_args.kwargs
+    assert kwargs["files"] == {"file": ("clip.mp4", b"\x00\x01", "video/mp4")}
+    assert kwargs["json"] is None
+
+
 @patch("fuzzrex.oracle.execute_sequence")
 @patch("fuzzrex.oracle.configured_service")
 def test_differential_probe_uses_same_sequence(mock_cm, mock_execute):

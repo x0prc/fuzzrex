@@ -73,6 +73,27 @@ def test_up_with_build(mock_run, project: tuple[Path, Path]):
 
 
 @patch("fuzzrex.orchestrator.subprocess.run")
+def test_recreate_mode_force_recreates_on_restart(mock_run, project: tuple[Path, Path]):
+    mock_run.return_value = MagicMock(returncode=0)
+    compose, config = project
+    orch = DockerComposeOrchestrator(
+        compose, "svc", config, "http://x", reload="recreate"
+    )
+    orch.restart()
+    command = mock_run.call_args[0][0]
+    assert command[:3] == ["docker", "compose", "-f"]
+    assert "up" in command and "-d" in command
+    assert "--force-recreate" in command
+    assert "restart" not in command
+
+
+def test_invalid_reload_mode_rejected(project: tuple[Path, Path]):
+    compose, config = project
+    with pytest.raises(ValueError, match="reload"):
+        DockerComposeOrchestrator(compose, "svc", config, "http://x", reload="hot")
+
+
+@patch("fuzzrex.orchestrator.subprocess.run")
 def test_compose_failure_raises(mock_run, project: tuple[Path, Path]):
     mock_run.side_effect = subprocess.CalledProcessError(
         1,

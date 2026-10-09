@@ -109,6 +109,77 @@ def test_state_values_preferred_for_params(spec_path: Path):
     assert request["url"].endswith("/users/99")
 
 
+CHAIN_SPEC = {
+    "openapi": "3.0.0",
+    "servers": [{"url": "http://api.test"}],
+    "paths": {
+        "/login": {
+            "post": {
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {"email": {"type": "string", "example": "a@b.c"}},
+                            }
+                        }
+                    }
+                },
+                "responses": {"200": {"description": "ok"}},
+            },
+        },
+        "/things": {
+            "post": {
+                "x-fuzzrex-token-from": "POST /login",
+                "x-fuzzrex-files": {
+                    "file": {
+                        "filename": "blob.bin",
+                        "content_base64": "AAEC",
+                        "content_type": "application/octet-stream",
+                    }
+                },
+                "requestBody": {
+                    "content": {"multipart/form-data": {"schema": {"type": "object"}}}
+                },
+                "responses": {"200": {"description": "ok"}},
+            },
+        },
+        "/convert": {
+            "get": {
+                "x-fuzzrex-token-from": "POST /login",
+                "x-fuzzrex-param-from": {"video_id": {"from": "POST /things", "json": "id"}},
+                "parameters": [
+                    {"name": "video_id", "in": "query", "schema": {"type": "integer"}}
+                ],
+                "responses": {"200": {"description": "ok"}},
+            },
+        },
+    },
+}
+
+
+@pytest.fixture
+def chain_spec_path(tmp_path: Path) -> Path:
+    path = tmp_path / "chain.json"
+    path.write_text(json.dumps(CHAIN_SPEC))
+    return path
+
+
+def test_plan_honors_chain_and_file_extensions(chain_spec_path: Path):
+    sequence = ApiFuzzer(str(chain_spec_path)).plan()
+    by_label = {r.label: r for r in sequence}
+    upload = by_label["POST /things"]
+    assert upload.token_from == "POST /login"
+    assert upload.files == {
+        "file": ("blob.bin", b"\x00\x01\x02", "application/octet-stream")
+    }
+    assert upload.body is None  # multipart wins over the JSON body
+    convert = by_label["GET /convert"]
+    assert convert.token_from == "POST /login"
+    assert convert.param_from == {"video_id": ("POST /things", "id")}
+    assert by_label["POST /login"].body == {"email": "a@b.c"}
+
+
 @patch("fuzzrex.api_fuzzer.requests.request")
 def test_run_reports_server_errors(mock_request, spec_path: Path):
     ok = MagicMock(status_code=200)

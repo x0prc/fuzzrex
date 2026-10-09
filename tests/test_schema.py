@@ -179,3 +179,51 @@ def test_bools_render_lowercase_in_ini(tmp_path):
     path = tmp_path / "b.ini"
     dump_document({"s": {"flag": True}}, path)
     assert "flag = true" in path.read_text()
+
+
+def test_fuzz_value_prefers_example_then_default():
+    assert fuzz_value({"type": "string", "example": "admin@example.com"}) == "admin@example.com"
+    assert fuzz_value({"type": "integer", "default": 7}) == 7
+    assert fuzz_value({"type": "string", "const": "fixed"}) == "fixed"
+    # enum stays highest priority (choice across allowed values).
+    assert fuzz_value({"enum": ["only"]}, rng=random.Random(0)) == "only"
+
+
+def test_load_env_coerces_and_tolerates_decorations(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text(
+        "# comment\n"
+        "\n"
+        "export LOG_LEVEL=DEBUG\n"
+        "ENABLE_SHELL_INJECTION=true\n"
+        "TIMEOUT='42'\n"
+        "BROKEN_LINE\n"
+        'QUOTED="hello world"\n'
+    )
+    assert load_document(path) == {
+        "LOG_LEVEL": "DEBUG",
+        "ENABLE_SHELL_INJECTION": True,
+        "TIMEOUT": 42,
+        "QUOTED": "hello world",
+    }
+
+
+def test_dump_env_is_compose_safe(tmp_path):
+    path = tmp_path / ".env"
+    dump_document(
+        {"FLAG": True, "PORT": 8080, "GONE": None, "NESTED": {"a": 1}, "NAME": "x"},
+        path,
+    )
+    lines = path.read_text().splitlines()
+    assert "FLAG=true" in lines
+    assert "PORT=8080" in lines
+    assert "NAME=x" in lines
+    assert not any("GONE" in line or "NESTED" in line for line in lines)
+    assert all("=" in line and " = " not in line for line in lines)
+
+
+def test_env_roundtrip_through_document_dispatch(tmp_path):
+    path = tmp_path / ".env"
+    document = {"ENABLE_LOG4J": False, "VERSION": 2}
+    dump_document(document, path)
+    assert load_document(path) == document

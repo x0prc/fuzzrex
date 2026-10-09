@@ -17,15 +17,16 @@ def test_dispatch_only_with_target_choice():
     assert "workflow_dispatch" in trigger
     target = trigger["workflow_dispatch"]["inputs"]["target"]
     assert target["type"] == "choice"
-    assert set(target["options"]) == {"all", "dvwa", "grafana"}
+    assert set(target["options"]) == {"all", "dvwa", "grafana", "crapi"}
 
 
-def test_matrix_covers_both_suts_with_health_checks():
+def test_matrix_covers_all_suts_with_health_checks():
     matrix = _load()["jobs"]["campaign"]["strategy"]["matrix"]["include"]
     by_sut = {entry["sut"]: entry for entry in matrix}
-    assert set(by_sut) == {"dvwa", "grafana"}
+    assert set(by_sut) == {"dvwa", "grafana", "crapi"}
     assert "login.php" in by_sut["dvwa"]["health"]
     assert by_sut["grafana"]["health"].endswith("/api/health")
+    assert by_sut["crapi"]["health"].endswith("/identity/health_check")
 
 
 def test_campaign_gates_steps_on_target_and_finishes_within_limit():
