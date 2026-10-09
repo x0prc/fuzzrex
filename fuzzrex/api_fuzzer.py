@@ -6,6 +6,7 @@ manager used during fuzzing sessions.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -159,7 +160,13 @@ class ApiFuzzer:
                 yield method.upper(), path, details
 
     def plan(self) -> list[HttpRequest]:
-        """Build the full request sequence once so it can be replayed across config cells."""
+        """Build the full request sequence once so it can be replayed across config cells.
+
+        Spec extensions (resolved at send time per config cell):
+        - `x-fuzzrex-token-from: <label>`: bearer token from that response.
+        - `x-fuzzrex-param-from: {name: {from: <label>, json: <key>}}`: query params.
+        - `x-fuzzrex-files: {field: {filename, content_base64, content_type}}`: multipart.
+        """
         planned: list[HttpRequest] = []
         for method, path, details in self.iter_operations():
             built = self._build_request(method, path, details)
@@ -173,9 +180,38 @@ class ApiFuzzer:
                     body=built["json"],
                     path=path,
                     label=f"{method} {path}",
+                    token_from=str(details.get("x-fuzzrex-token-from", "")),
+                    param_from=self._param_from(details),
+                    files=self._files(details),
                 ),
             )
         return planned
+
+    def _param_from(self, details: dict[str, Any]) -> dict[str, tuple[str, str]]:
+        raw = details.get("x-fuzzrex-param-from")
+        if not isinstance(raw, dict):
+            return {}
+        links: dict[str, tuple[str, str]] = {}
+        for name, spec in raw.items():
+            if isinstance(spec, dict) and spec.get("from") and spec.get("json"):
+                links[str(name)] = (str(spec["from"]), str(spec["json"]))
+        return links
+
+    def _files(self, details: dict[str, Any]) -> dict[str, tuple[str, bytes, str]] | None:
+        raw = details.get("x-fuzzrex-files")
+        if not isinstance(raw, dict):
+            return None
+        files: dict[str, tuple[str, bytes, str]] = {}
+        for field, spec in raw.items():
+            if not isinstance(spec, dict):
+                continue
+            content = base64.b64decode(spec.get("content_base64", ""))
+            files[str(field)] = (
+                str(spec.get("filename", "blob")),
+                content,
+                str(spec.get("content_type", "application/octet-stream")),
+            )
+        return files or None
 
     def run(self) -> list[Finding]:
         findings: list[Finding] = []
@@ -238,7 +274,7 @@ class ApiFuzzer:
                 cookies[name] = str(value)
 
         body_schema = self._request_body_schema(details)
-        if body_schema is not None:
+        if body_schema is not None and not details.get("x-fuzzrex-files"):
             body = fuzz_value(body_schema)
 
         return {

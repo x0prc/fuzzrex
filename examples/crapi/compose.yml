@@ -1,0 +1,111 @@
+# crAPI (OWASP) — Phase 1 fixture, derived from
+# https://github.com/OWASP/crAPI (Apache-2.0).
+#
+# Scope: identity service only. The campaign probes 127.0.0.1:8080 directly
+# because crapi-web's nginx injects X-Forwarded-Host, which convert_video
+# treats as "external" (403) — the ENABLE_SHELL_INJECTION branch is only
+# reachable on the internal surface. crapi-web/community/workshop are
+# therefore omitted (also keeps the stack within a 8 GB Docker VM).
+#
+# Config knobs live in ./.env (compose interpolates them); mutating .env
+# requires `up -d --force-recreate`, not restart.
+
+services:
+  crapi-identity:
+    container_name: crapi-identity
+    image: crapi/crapi-identity:${VERSION:-latest}
+    ports:
+      - "${LISTEN_IP:-127.0.0.1}:8080:8080"
+    volumes:
+      - ./keys:/app/keys
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DB_NAME=crapi
+      - DB_USER=admin
+      - DB_PASSWORD=crapisecretpassword
+      - DB_HOST=postgresdb
+      - DB_PORT=5432
+      - SERVER_PORT=${IDENTITY_SERVER_PORT:-8080}
+      - ENABLE_SHELL_INJECTION=${ENABLE_SHELL_INJECTION:-false}
+      - JWT_SECRET=crapi
+      - MAILHOG_HOST=mailhog
+      - MAILHOG_PORT=1025
+      - MAILHOG_DOMAIN=example.com
+      - SMTP_HOST=smtp.example.com
+      - SMTP_PORT=587
+      - SMTP_EMAIL=user@example.com
+      - SMTP_PASS=xxxxxxxxxxxxxx
+      - SMTP_FROM=no-reply@example.com
+      - SMTP_AUTH=true
+      - SMTP_STARTTLS=true
+      - JWT_EXPIRATION=604800000
+      - ENABLE_LOG4J=${ENABLE_LOG4J:-false}
+      - API_GATEWAY_URL=https://api.mypremiumdealership.com
+      - TLS_ENABLED=${TLS_ENABLED:-false}
+      - TLS_KEYSTORE_TYPE=PKCS12
+      - TLS_KEYSTORE=classpath:certs/server.p12
+      - TLS_KEYSTORE_PASSWORD=passw0rd
+      - TLS_KEY_PASSWORD=passw0rd
+      - TLS_KEY_ALIAS=identity
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      mailhog:
+        condition: service_healthy
+    healthcheck:
+      # health.sh follows TLS_ENABLED; fast interval because this is the
+      # service recreated per config mutation.
+      test: /app/health.sh
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  postgresdb:
+    container_name: postgresdb
+    image: 'postgres:14'
+    command: ["postgres", "-c", "max_connections=500"]
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: crapisecretpassword
+      POSTGRES_DB: crapi
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready" ]
+      interval: 15s
+      timeout: 15s
+      retries: 15
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data/
+
+  mongodb:
+    container_name: mongodb
+    image: 'mongo:4.4'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: crapisecretpassword
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongo mongodb:27017/test --quiet
+      interval: 15s
+      timeout: 15s
+      retries: 15
+      start_period: 20s
+    volumes:
+      - mongodb-data:/data/db
+
+  mailhog:
+    user: root
+    container_name: mailhog
+    image: crapi/mailhog:${VERSION:-latest}
+    environment:
+      MH_MONGO_URI: admin:crapisecretpassword@mongodb:27017
+      MH_STORAGE: mongodb
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "8025" ]
+      interval: 15s
+      timeout: 15s
+      retries: 15
+
+volumes:
+  mongodb-data:
+  postgresql-data:

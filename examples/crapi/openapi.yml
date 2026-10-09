@@ -1,0 +1,124 @@
+openapi: 3.0.3
+info:
+  title: crAPI identity service (probe-verified subset)
+  version: "1.0"
+  description: >
+    Probe-verified operations against the OWASP crAPI identity service on its
+    direct port. The public nginx front injects X-Forwarded-Host, which makes
+    convert_video return 403 for every external caller, so this fixture
+    publishes 127.0.0.1:8080 and talks to the service directly. Chained
+    auth/data links use x-fuzzrex-* extensions resolved per config cell at
+    send time.
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /identity/api/auth/login:
+    post:
+      operationId: login
+      summary: Issue a bearer token (example credentials are seeded)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: admin@example.com
+                password:
+                  type: string
+                  example: Admin!123
+      responses:
+        "200": {description: token issued}
+        "401": {description: invalid credentials}
+  /identity/api/v2/user/videos:
+    post:
+      operationId: uploadVideo
+      summary: Seed the caller's profile video (multipart)
+      x-fuzzrex-token-from: POST /identity/api/auth/login
+      x-fuzzrex-files:
+        file:
+          filename: clip.mp4
+          content_base64: AAAAGGZ0eXBtcDQyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          content_type: video/mp4
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200": {description: video stored, returns id}
+        "401": {description: missing or invalid token}
+  /identity/api/v2/user/videos/{video_id}:
+    put:
+      operationId: updateVideoParams
+      summary: Set conversion params (path id is ignored; row is token-user scoped)
+      x-fuzzrex-token-from: POST /identity/api/auth/login
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema: {type: integer, example: 1}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversion_params:
+                  type: string
+                  example: $(id)
+                video_name:
+                  type: string
+                  example: clip.mp4
+      responses:
+        "200": {description: params stored}
+        "404": {description: caller has no profile video yet}
+        "401": {description: missing or invalid token}
+  /identity/api/v2/user/videos/convert_video:
+    get:
+      operationId: convertVideo
+      summary: >
+        Runs the conversion command; with ENABLE_SHELL_INJECTION=false the
+        params pass ProfileValidator (special characters -> 500), with
+        true they reach bash (200).
+      x-fuzzrex-token-from: POST /identity/api/auth/login
+      x-fuzzrex-param-from:
+        video_id:
+          from: POST /identity/api/v2/user/videos
+          json: id
+      parameters:
+        - name: video_id
+          in: query
+          required: true
+          schema: {type: integer}
+      responses:
+        "200": {description: conversion command executed}
+        "500": {description: conversion blocked or video missing}
+        "401": {description: missing or invalid token}
+  /identity/api/v2/user/dashboard:
+    get:
+      operationId: dashboard
+      summary: Authenticated profile dashboard (TLS cell flips this to 400)
+      x-fuzzrex-token-from: POST /identity/api/auth/login
+      responses:
+        "200": {description: dashboard returned}
+        "401": {description: missing or invalid token}
+  /identity/health_check:
+    get:
+      operationId: health
+      summary: Liveness control request
+      responses:
+        "200": {description: healthy}
+  /identity/api/auth/jwks.json:
+    get:
+      operationId: jwks
+      summary: Public signing keys control request
+      responses:
+        "200": {description: key set}

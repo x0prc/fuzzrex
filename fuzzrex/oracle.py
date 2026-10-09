@@ -11,7 +11,7 @@ import json
 import random
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import requests
@@ -42,7 +42,14 @@ AUTH_STATUSES = frozenset({401, 403})
 
 @dataclass(frozen=True)
 class HttpRequest:
-    """A single planned request; identical instances are replayed across config cells."""
+    """A single planned request; identical instances are replayed across config cells.
+
+    `token_from` labels an earlier request whose JSON `token` field becomes
+    this request's `Authorization: Bearer` value at send time (resolved
+    independently inside each config cell). `param_from` maps query-parameter
+    names to `(label, json_key)` producer links resolved the same way.
+    `files` carries multipart payloads as `field -> (filename, content, type)`.
+    """
 
     method: str
     url: str
@@ -52,6 +59,9 @@ class HttpRequest:
     body: Any = None
     path: str = ""
     label: str = ""
+    token_from: str = ""
+    param_from: dict[str, tuple[str, str]] = field(default_factory=dict)
+    files: dict[str, tuple[str, bytes, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -87,7 +97,8 @@ def send_request(request: HttpRequest, timeout: float = DEFAULT_TIMEOUT) -> requ
         params=request.params,
         headers=request.headers,
         cookies=request.cookies,
-        json=request.body,
+        json=None if request.files else request.body,
+        files=request.files,
         timeout=timeout,
         allow_redirects=False,
     )
@@ -128,14 +139,42 @@ def execute_sequence(
     timeout: float = DEFAULT_TIMEOUT,
 ) -> list[ResponseSnapshot]:
     snapshots: list[ResponseSnapshot] = []
+    captured: dict[str, dict[str, Any]] = {}
     for request in sequence:
+        planned = _resolve_links(request, captured)
         try:
-            response = send_request(request, timeout=timeout)
+            response = send_request(planned, timeout=timeout)
         except requests.RequestException:
             snapshots.append(ResponseSnapshot(None, None, "", frozenset()))
             continue
-        snapshots.append(snapshot_response(response))
+        snapshot = snapshot_response(response)
+        snapshots.append(snapshot)
+        if isinstance(snapshot.body, dict):
+            captured[request.label] = snapshot.body
     return snapshots
+
+
+def _resolve_links(request: HttpRequest, captured: dict[str, dict[str, Any]]) -> HttpRequest:
+    """Fill bearer token and query params from responses of earlier requests."""
+    headers = request.headers
+    params = request.params
+    changed = False
+
+    if request.token_from:
+        token = (captured.get(request.token_from) or {}).get("token")
+        if token:
+            headers = {**headers, "Authorization": f"Bearer {token}"}
+            changed = True
+
+    for name, (label, key) in request.param_from.items():
+        producer = captured.get(label) or {}
+        if key in producer:
+            params = {**params, name: producer[key]}
+            changed = True
+
+    if not changed:
+        return request
+    return replace(request, headers=headers, params=params)
 
 
 def compare_sequences(

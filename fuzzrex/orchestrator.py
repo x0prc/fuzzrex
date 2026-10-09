@@ -41,7 +41,10 @@ class DockerComposeOrchestrator:
         health_path: str = "/health",
         compose_cmd: Sequence[str] = DEFAULT_COMPOSE,
         health_timeout: float = DEFAULT_HEALTH_TIMEOUT,
+        reload: str = "restart",
     ) -> None:
+        if reload not in ("restart", "recreate"):
+            raise ValueError(f"reload must be 'restart' or 'recreate', got {reload!r}")
         self.compose_file = Path(compose_file)
         self.service = service
         self.config_path = Path(config_path)
@@ -49,6 +52,7 @@ class DockerComposeOrchestrator:
         self.health_path = health_path
         self.compose_cmd = tuple(compose_cmd)
         self.health_timeout = health_timeout
+        self.reload = reload
 
         if not self.compose_file.is_file():
             raise FileNotFoundError(f"Compose file not found: {self.compose_file}")
@@ -71,7 +75,12 @@ class DockerComposeOrchestrator:
         dump_document(config, self.config_path)
 
     def restart(self) -> None:
-        self._compose("restart", self.service)
+        if self.reload == "recreate":
+            # Env-var configs are baked in at container creation; restart
+            # would silently keep the old values.
+            self._compose("up", "-d", "--force-recreate", self.service)
+        else:
+            self._compose("restart", self.service)
 
     def wait_healthy(self, timeout: float | None = None) -> None:
         deadline = time.monotonic() + (timeout if timeout is not None else self.health_timeout)

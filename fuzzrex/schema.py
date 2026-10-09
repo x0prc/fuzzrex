@@ -23,11 +23,17 @@ def _is_ini(path: Path) -> bool:
     return path.suffix.lower() in {".ini", ".cfg", ".conf"}
 
 
+def _is_env(path: Path) -> bool:
+    return path.name == ".env" or path.suffix.lower() == ".env"
+
+
 def load_document(path: str | Path) -> Any:
-    """Load a JSON, YAML, or INI file, detecting format from the extension."""
+    """Load a JSON, YAML, INI, or .env file, detecting format from the name."""
     file_path = Path(path)
     if not file_path.is_file():
         raise FileNotFoundError(f"File not found: {file_path}")
+    if _is_env(file_path):
+        return load_env(file_path)
     if _is_ini(file_path):
         return load_ini(file_path)
     text = file_path.read_text(encoding="utf-8")
@@ -38,6 +44,50 @@ def load_document(path: str | Path) -> Any:
     except json.JSONDecodeError:
         # Fall back to YAML for extension-less or mislabeled files.
         return yaml.safe_load(text)
+
+
+def load_env(path: str | Path) -> dict[str, Any]:
+    """Parse a KEY=value env file (docker compose `env_file` style).
+
+    Values are coerced with the same scalar rules as INI so config
+    mutation sees real types; comments, blanks, and `export ` prefixes
+    are tolerated. Multi-line/continuation values are not supported.
+    """
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    document: dict[str, Any] = {}
+    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            document[key] = _coerce_scalar(value)
+    return document
+
+
+def dump_env(document: dict[str, Any], path: str | Path) -> None:
+    """Write {KEY: value} as a compose-compatible env file (no spaces, no nulls).
+
+    Unrepresentable values are dropped: None, dicts, and lists have no
+    env-file form, matching dump_ini's coercion stance.
+    """
+    file_path = Path(path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    for key, value in document.items():
+        if value is None or isinstance(value, (dict, list)):
+            continue
+        rendered = str(value).lower() if isinstance(value, bool) else str(value)
+        lines.append(f"{key}={rendered}")
+    file_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
 def load_ini(path: str | Path) -> dict[str, dict[str, Any]]:
@@ -113,9 +163,12 @@ def load_spec(path: str | Path) -> dict[str, Any]:
 
 
 def dump_document(document: Any, path: str | Path) -> None:
-    """Write a structure to disk, matching format to the file extension."""
+    """Write a structure to disk, matching format to the file name/extension."""
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    if _is_env(file_path):
+        dump_env(document, file_path)
+        return
     if _is_ini(file_path):
         dump_ini(document, file_path)
         return
@@ -200,6 +253,13 @@ def fuzz_value(schema: dict[str, Any] | None, *, rng: random.Random | None = Non
         return rng.choice(schema["enum"])
     if "const" in schema:
         return schema["const"]
+    # Probe-verified examples and declared defaults win over random fuzzing:
+    # valid credentials, crafted payloads, and realistic values need to be
+    # reproducible across replays.
+    if "example" in schema:
+        return schema["example"]
+    if "default" in schema:
+        return schema["default"]
 
     schema_type = schema.get("type")
     if isinstance(schema_type, list):

@@ -7,7 +7,7 @@ on:
         description: SUT to campaign
         type: choice
         default: all
-        options: [all, dvwa, grafana]
+        options: [all, dvwa, grafana, crapi]
 
 concurrency:
   group: phase1-campaign
@@ -24,6 +24,8 @@ jobs:
             health: http://127.0.0.1:4280/login.php
           - sut: grafana
             health: http://127.0.0.1:3000/api/health
+          - sut: crapi
+            health: http://127.0.0.1:8080/identity/health_check
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

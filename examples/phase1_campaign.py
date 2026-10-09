@@ -4,7 +4,7 @@ Reproduces the results table: 10 seeds x 30 iterations, three arms,
 per-seed checkpointing into findings/phase1/<sut>.json. Re-running
 skips seeds already present (crash-safe resume).
 
-Usage: python examples/phase1_campaign.py dvwa|grafana
+Usage: python examples/phase1_campaign.py dvwa|grafana|crapi
 """
 
 import json
@@ -20,6 +20,10 @@ OUT = REPO / "findings" / "phase1"
 OUT.mkdir(parents=True, exist_ok=True)
 
 DVWA_LEVELS = ["low", "medium", "high", "impossible"]
+CRAPI_KNOBS = {
+    "ENABLE_SHELL_INJECTION": [False, True],
+    "TLS_ENABLED": [False, True],
+}
 SEEDS = tuple(range(10))
 JOINT_ITERATIONS = 30
 
@@ -63,6 +67,21 @@ def main(target: str) -> None:
         )
         spec = str(REPO / "examples/dvwa/openapi.yml")
         enums = {"default_security_level": DVWA_LEVELS}
+    elif target == "crapi":
+        # Env-var config: every mutation force-recreates crapi-identity, and
+        # the spec probes the direct port (nginx would block convert_video).
+        orch = DockerComposeOrchestrator(
+            REPO / "examples/crapi/compose.yml",
+            "crapi-identity",
+            REPO / "examples/crapi/.env",
+            "http://127.0.0.1:8080",
+            health_path="/identity/health_check",
+            reload="recreate",
+        )
+        baseline = {"ENABLE_SHELL_INJECTION": False, "TLS_ENABLED": False}
+        cells = config_grid(CRAPI_KNOBS)
+        spec = str(REPO / "examples/crapi/openapi.yml")
+        enums = CRAPI_KNOBS
     else:
         orch = DockerComposeOrchestrator(
             REPO / "examples/grafana/compose.yml",
@@ -158,6 +177,6 @@ def main(target: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in ("dvwa", "grafana"):
-        raise SystemExit("usage: phase1_campaign.py dvwa|grafana")
+    if len(sys.argv) != 2 or sys.argv[1] not in ("dvwa", "grafana", "crapi"):
+        raise SystemExit("usage: phase1_campaign.py dvwa|grafana|crapi")
     main(sys.argv[1])
