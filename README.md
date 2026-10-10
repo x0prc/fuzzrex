@@ -185,29 +185,33 @@ seeds — joint search, the same search with the feedback loop disabled
 (ablation), and Schemathesis once per cell of the static config grid —
 and checkpoints a JSON summary per seed into `findings/phase1/`
 (gitignored). Campaign: 10 seeds x 30 iterations, 5 examples/op for
-the baseline (`examples/phase1_campaign.py`, crash-safe resume):
+the baseline (`examples/phase1_campaign.py`, crash-safe resume;
+[run 38034106363](https://github.com/x0prc/fuzzrex/actions/runs/38034106363)):
 
-| SUT | Grid | joint | joint-no-feedback | paired (sign-flip) | baseline |
+| SUT | Grid | joint (probes → unique) | no-feedback (probes → unique) | paired (sign-flip) | baseline |
 |---|---|---|---|---|---|
-| dvwa | 8 cells | **11.20 ± 2.82** | 9.20 ± 3.19 | Δ=+2.00, p=0.13 | 41.6/seed → 3 unique |
-| grafana | 2 cells | 12.40 ± 2.80 | **14.80 ± 2.30** | Δ=−2.40, p=0.037 | 0 |
+| dvwa | 8 cells | **11.20 ± 2.82 → 3.80** | 9.20 ± 3.19 → 1.00 | Δ=+2.00, p=0.13 | 48.0/seed → 2 unique |
+| grafana | 2 cells | 12.40 ± 2.80 → 1.00 | **14.80 ± 2.30 → 1.00** | Δ=−2.40, p=0.037 | 0 |
+| crapi | 4 cells | **25.80 ± 1.64 → 3.00** | 15.80 ± 3.27 → 2.00 | Δ=+10.00, p=0.063 (n=5) | 18.0/seed → 2 unique |
 
 Reading the table:
 
-- **Baseline is config-blind**: DVWA's 41.6 findings/seed collapse to
-  3 unique signatures, identical in every cell — per-cell API fuzzing
-  cannot observe auth gating that only appears when the config flips.
-- **Feedback depends on config-space depth**: on DVWA's 2-knob space
-  growing from divergent cells helps (+2 cells/seed); on Grafana's
-  single knob it hurts (p=0.037) because exploiting a one-shot cell
-  mostly produces mutations that lose the divergence.
-- Cell counts in this table are divergent *probes* (pre-refinement
-  data); the metric now also records **unique effective configs**
-  (`unique_cells`, canonical-JSON dedupe — mutations never add keys,
-  so canonical form equals the on-disk cell). Definitive numbers
-  come from the next campaign run.
-- crAPI joins the campaign as a third SUT (4-cell grid:
-  shell-injection × TLS); its numbers come from the same run.
+- **Unique effective configs (`unique_cells`) is the headline**:
+  joint covers 3.80 of DVWA's 8 cells and 3.00 of crAPI's 4, versus
+  1.00 and 2.00 for the ablation — exploiting divergent cells grows
+  *config diversity*, not just probe volume. Probe counts alone
+  understate this: on Grafana's depth-1 knob every visit lands the
+  same cell (unique=1 for both arms) and the ablation wins on probes
+  (p=0.037).
+- **Baseline is config-blind**: DVWA's 48 findings/seed collapse to
+  2 unique signatures (crAPI: 18 → 2; Grafana: 0) — per-cell API
+  fuzzing cannot observe auth gating or the bash-exec 500 that only
+  appear when the config flips.
+- crAPI kinds are `status` + `server-error` (the
+  `ENABLE_SHELL_INJECTION` bash branch) with first divergence at
+  iteration 0.8 on average; its numbers cover 5 of 10 seeds (the job
+  hit the 240-min timeout at ~40 min/seed — remaining seeds are
+  queued for a follow-up run).
 
 Analyze any campaign directory (stdlib only, exact paired sign-flip
 test):
