@@ -43,6 +43,21 @@ def test_campaign_gates_steps_on_target_and_finishes_within_limit():
         assert "inputs.target" in step["if"]
 
 
+def test_resume_step_restores_previous_checkpoint_before_campaign():
+    steps = _load()["jobs"]["campaign"]["steps"]
+    names = [step.get("name") for step in steps]
+    resume = steps[names.index("Resume from previous checkpoint")]
+    assert "matrix.sut" in resume["if"]
+    assert "inputs.target" in resume["if"]
+    assert "gh api" in resume["run"]
+    assert "findings-" in resume["run"]
+    assert "findings/phase1" in resume["run"]
+    assert resume["env"]["GH_TOKEN"]
+    # restore must happen after install and before the campaign runs
+    assert names.index("Install") < names.index("Resume from previous checkpoint")
+    assert names.index("Resume from previous checkpoint") < names.index("Run campaign")
+
+
 def test_analyze_needs_campaign_and_publishes_summary():
     analyze = _load()["jobs"]["analyze"]
     assert analyze["needs"] == "campaign"
