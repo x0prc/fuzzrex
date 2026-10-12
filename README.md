@@ -186,13 +186,15 @@ seeds — joint search, the same search with the feedback loop disabled
 and checkpoints a JSON summary per seed into `findings/phase1/`
 (gitignored). Campaign: 10 seeds x 30 iterations, 5 examples/op for
 the baseline (`examples/phase1_campaign.py`, crash-safe resume;
-[run 38034106363](https://github.com/x0prc/fuzzrex/actions/runs/38034106363)):
+[run 38034106363](https://github.com/x0prc/fuzzrex/actions/runs/38034106363)
+plus the crAPI resume
+[run 38145879213](https://github.com/x0prc/fuzzrex/actions/runs/38145879213)):
 
 | SUT | Grid | joint (probes → unique) | no-feedback (probes → unique) | paired (sign-flip) | baseline |
 |---|---|---|---|---|---|
 | dvwa | 8 cells | **11.20 ± 2.82 → 3.80** | 9.20 ± 3.19 → 1.00 | Δ=+2.00, p=0.13 | 48.0/seed → 2 unique |
 | grafana | 2 cells | 12.40 ± 2.80 → 1.00 | **14.80 ± 2.30 → 1.00** | Δ=−2.40, p=0.037 | 0 |
-| crapi | 4 cells | **25.80 ± 1.64 → 3.00** | 15.80 ± 3.27 → 2.00 | Δ=+10.00, p=0.063 (n=5) | 18.0/seed → 2 unique |
+| crapi | 4 cells | **23.50 ± 4.74 → 3.00** | 14.30 ± 3.16 → 2.00 | **Δ=+9.20, p=0.002** | 18.0/seed → 2 unique |
 
 Reading the table:
 
@@ -207,11 +209,11 @@ Reading the table:
   2 unique signatures (crAPI: 18 → 2; Grafana: 0) — per-cell API
   fuzzing cannot observe auth gating or the bash-exec 500 that only
   appear when the config flips.
-- crAPI kinds are `status` + `server-error` (the
-  `ENABLE_SHELL_INJECTION` bash branch) with first divergence at
-  iteration 0.8 on average; its numbers cover 5 of 10 seeds (the job
-  hit the 240-min timeout at ~40 min/seed — remaining seeds are
-  queued for a follow-up run).
+- **crAPI is the strongest result**: `status` + `server-error` kinds
+  (the `ENABLE_SHELL_INJECTION` bash branch), first divergence at
+  iteration 0.9, and the only SUT where feedback is significant in
+  the joint direction (Δ=+9.20, p=0.002, n=10 — assembled across two
+  runs via cross-run checkpoint resume).
 
 Analyze any campaign directory (stdlib only, exact paired sign-flip
 test):
