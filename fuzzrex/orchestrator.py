@@ -97,8 +97,12 @@ class DockerComposeOrchestrator:
             time.sleep(0.25)
         raise OrchestratorError(f"SUT not healthy at {url} within timeout: {last_error}")
 
-    def restore(self) -> None:
+    def restore_disk(self) -> None:
+        """Write the original config back to disk without restarting."""
         self.config_path.write_bytes(self._original_config)
+
+    def restore(self) -> None:
+        self.restore_disk()
         try:
             self.restart()
             self.wait_healthy()
@@ -155,12 +159,24 @@ class DockerComposeOrchestrator:
 def configured_service(
     orchestrator: DockerComposeOrchestrator,
     config: Any,
+    *,
+    defer: bool = False,
 ) -> Iterator[DockerComposeOrchestrator]:
-    """Apply `config`, restart, wait healthy; always restore the original config."""
+    """Apply `config`, restart, wait healthy; restore the original config.
+
+    With `defer=True` the exit only writes the original config bytes
+    back to disk and skips the restart + health wait: the caller's next
+    action must be another `configured_service` block or an explicit
+    `orchestrator.restore()`. Never query the SUT between a deferred
+    block and the next apply — it still runs the deferred variant.
+    """
     try:
         orchestrator.apply_config(config)
         orchestrator.restart()
         orchestrator.wait_healthy()
         yield orchestrator
     finally:
-        orchestrator.restore()
+        if defer:
+            orchestrator.restore_disk()
+        else:
+            orchestrator.restore()

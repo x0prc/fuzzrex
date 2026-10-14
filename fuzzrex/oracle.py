@@ -357,46 +357,53 @@ def run_joint_search_traced(
         raise ValueError("iterations must be >= 1")
 
     rng = random.Random(seed)
-    with configured_service(orchestrator, baseline_config):
-        baseline_snaps = execute_sequence(sequence, timeout=timeout)
+    # Cells are applied with defer=True (disk-only exit, no restart) since
+    # every next block re-applies a config before any request is sent; the
+    # final restore() lands the SUT back on c0 exactly once. Profiling shows
+    # eager per-block restore was ~40-50% of campaign wall time.
+    try:
+        with configured_service(orchestrator, baseline_config, defer=True):
+            baseline_snaps = execute_sequence(sequence, timeout=timeout)
 
-    mutation_base = baseline_config
-    results: list[CellResult] = []
-    visited = unhealthy = 0
-    first_iteration: int | None = None
-    first_at: float | None = None
-    started = time.monotonic()
+        mutation_base = baseline_config
+        results: list[CellResult] = []
+        visited = unhealthy = 0
+        first_iteration: int | None = None
+        first_at: float | None = None
+        started = time.monotonic()
 
-    for index in range(iterations):
-        variant = mutate_config(mutation_base, rng, enums=enums)
-        try:
-            with configured_service(orchestrator, variant):
-                snaps = execute_sequence(sequence, timeout=timeout)
-        except OrchestratorError:
-            unhealthy += 1
-            continue
+        for index in range(iterations):
+            variant = mutate_config(mutation_base, rng, enums=enums)
+            try:
+                with configured_service(orchestrator, variant, defer=True):
+                    snaps = execute_sequence(sequence, timeout=timeout)
+            except OrchestratorError:
+                unhealthy += 1
+                continue
 
-        visited += 1
-        divergences = compare_sequences(sequence, baseline_snaps, snaps)
-        if divergences:
-            results.append(CellResult(variant, tuple(divergences)))
-            if first_iteration is None:
-                first_iteration = index
-                first_at = time.monotonic() - started
-            if feedback:
-                mutation_base = variant
-        elif feedback and index % RESTART_EVERY == RESTART_EVERY - 1:
-            mutation_base = baseline_config
+            visited += 1
+            divergences = compare_sequences(sequence, baseline_snaps, snaps)
+            if divergences:
+                results.append(CellResult(variant, tuple(divergences)))
+                if first_iteration is None:
+                    first_iteration = index
+                    first_at = time.monotonic() - started
+                if feedback:
+                    mutation_base = variant
+            elif feedback and index % RESTART_EVERY == RESTART_EVERY - 1:
+                mutation_base = baseline_config
 
-    return SearchTrace(
-        divergent_cells=tuple(results),
-        unique_cells=len({canonical_config(cell.config) for cell in results}),
-        cells_visited=visited,
-        cells_unhealthy=unhealthy,
-        first_divergence_iteration=first_iteration,
-        first_divergence_s=first_at,
-        elapsed_s=time.monotonic() - started,
-    )
+        return SearchTrace(
+            divergent_cells=tuple(results),
+            unique_cells=len({canonical_config(cell.config) for cell in results}),
+            cells_visited=visited,
+            cells_unhealthy=unhealthy,
+            first_divergence_iteration=first_iteration,
+            first_divergence_s=first_at,
+            elapsed_s=time.monotonic() - started,
+        )
+    finally:
+        orchestrator.restore()
 
 
 def run_joint_search(

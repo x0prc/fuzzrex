@@ -186,19 +186,22 @@ def run_baseline_matrix(
 ) -> list[BaselineResult]:
     """Run the baseline fuzzer once per config cell, restoring the SUT afterwards.
 
-    Each cell is applied via the orchestrator (restart + health check),
-    the fuzzer runs, and the original config is restored by
-    `configured_service`.
+    Each cell is applied via the orchestrator (restart + health check) and
+    the fuzzer runs; cells exit with defer=True (disk-only restore) and the
+    original config is restarted back exactly once at the end.
     """
     results: list[BaselineResult] = []
-    for config in configs:
-        with configured_service(orchestrator, config):
-            results.append(
-                run_schemathesis(
-                    spec_path,
-                    orchestrator.base_url,
-                    config=config,
-                    **run_kwargs,
-                ),
-            )
+    try:
+        for config in configs:
+            with configured_service(orchestrator, config, defer=True):
+                results.append(
+                    run_schemathesis(
+                        spec_path,
+                        orchestrator.base_url,
+                        config=config,
+                        **run_kwargs,
+                    ),
+                )
+    finally:
+        orchestrator.restore()
     return results
