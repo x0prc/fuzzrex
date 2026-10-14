@@ -15,9 +15,13 @@ def test_dispatch_only_with_target_choice():
     document = _load()
     trigger = document.get("on", document.get(True))  # YAML parses bare `on` as True
     assert "workflow_dispatch" in trigger
-    target = trigger["workflow_dispatch"]["inputs"]["target"]
+    inputs = trigger["workflow_dispatch"]["inputs"]
+    target = inputs["target"]
     assert target["type"] == "choice"
     assert set(target["options"]) == {"all", "dvwa", "grafana", "crapi"}
+    fresh = inputs["fresh"]
+    assert fresh["type"] == "boolean"
+    assert fresh["default"] is False
 
 
 def test_matrix_covers_all_suts_with_health_checks():
@@ -49,6 +53,8 @@ def test_resume_step_restores_previous_checkpoint_before_campaign():
     resume = steps[names.index("Resume from previous checkpoint")]
     assert "matrix.sut" in resume["if"]
     assert "inputs.target" in resume["if"]
+    # fresh dispatches skip the restore so every seed reruns
+    assert "inputs.fresh" in resume["if"]
     assert "gh api" in resume["run"]
     assert "findings-" in resume["run"]
     assert "findings/phase1" in resume["run"]
