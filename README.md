@@ -228,8 +228,7 @@ The full campaign runs on a 4-core runner (no local Docker needed):
 **Actions → Phase 1 campaign → Run workflow** (pick one SUT or run all
 three). Each SUT job checkpoints its JSON into an artifact even on
 failure, and a re-dispatch restores the latest checkpoint first, so
-long jobs (crAPI ~40 min/seed) resume across attempts instead of
-restarting. The analyze job publishes the summary table to the
+long jobs resume across attempts instead of restarting. The analyze job publishes the summary table to the
 workflow's step summary plus `phase1-analysis` (CSV + report).
 
 ## Development
