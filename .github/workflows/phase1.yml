@@ -8,6 +8,10 @@ on:
         type: choice
         default: all
         options: [all, dvwa, grafana, crapi]
+      fresh:
+        description: Ignore previous checkpoints (rerun every seed)
+        type: boolean
+        default: false
 
 concurrency:
   group: phase1-campaign
@@ -34,7 +38,7 @@ jobs:
       - name: Install
         run: pip install -e ".[baseline]"
       - name: Resume from previous checkpoint
-        if: ${{ inputs.target == 'all' || inputs.target == matrix.sut }}
+        if: ${{ (inputs.target == 'all' || inputs.target == matrix.sut) && !inputs.fresh }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
