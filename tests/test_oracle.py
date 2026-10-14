@@ -405,6 +405,38 @@ def test_trace_dedupes_repeat_configs(mock_cm, mock_execute, mock_mutate):
     assert trace.unique_cells == 2
 
 
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_traced_defers_blocks_and_restores_once(mock_cm, mock_execute):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+    mock_execute.side_effect = [[_snap(200)], [_snap(401)]]
+
+    planned = [_request("GET /admin")]
+    trace = run_joint_search_traced(orch, {"debug": False}, planned, iterations=1, seed=1)
+
+    assert trace.cells_visited == 1
+    # baseline snapshot + one cell, both disk-only exits
+    assert mock_cm.call_count == 2
+    assert all(call.kwargs.get("defer") is True for call in mock_cm.call_args_list)
+    # the SUT lands back on c0 exactly once, after the search
+    orch.restore.assert_called_once()
+
+
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_traced_restores_even_when_search_raises(mock_cm, mock_execute):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+    mock_execute.side_effect = RuntimeError("replay exploded")
+
+    planned = [_request("GET /admin")]
+    with pytest.raises(RuntimeError, match="replay exploded"):
+        run_joint_search_traced(orch, {"debug": False}, planned, iterations=1, seed=1)
+
+    orch.restore.assert_called_once()
+
+
 def test_canonical_config_is_key_order_independent():
     from fuzzrex.oracle import canonical_config
 

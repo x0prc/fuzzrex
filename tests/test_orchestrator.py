@@ -188,6 +188,45 @@ def test_configured_service_restores_on_fuzz_error(
 
 
 @patch("fuzzrex.orchestrator.requests.get")
+@patch("fuzzrex.orchestrator.subprocess.run")
+def test_configured_service_defer_skips_exit_restart(
+    mock_run,
+    mock_get,
+    project: tuple[Path, Path],
+):
+    mock_run.return_value = MagicMock(returncode=0)
+    mock_get.return_value = MagicMock(status_code=200)
+    _, config = project
+    orch = make_orchestrator(*project)
+
+    with configured_service(orch, {"debug": True}, defer=True):
+        assert orch.load_current_config() == {"debug": True}
+
+    # disk is back on the original bytes, but only the enter restart ran
+    assert orch.load_current_config() == {"debug": False}
+    assert mock_run.call_count == 1
+
+
+@patch("fuzzrex.orchestrator.requests.get")
+@patch("fuzzrex.orchestrator.subprocess.run")
+def test_restore_disk_writes_original_without_restart(
+    mock_run,
+    mock_get,
+    project: tuple[Path, Path],
+):
+    mock_run.return_value = MagicMock(returncode=0)
+    mock_get.return_value = MagicMock(status_code=200)
+    orch = make_orchestrator(*project)
+
+    orch.apply_config({"debug": True})
+    orch.restore_disk()
+
+    assert orch.load_current_config() == {"debug": False}
+    assert mock_run.call_count == 0
+    assert mock_get.call_count == 0
+
+
+@patch("fuzzrex.orchestrator.requests.get")
 def test_wait_healthy_timeout(mock_get, project: tuple[Path, Path]):
     import requests as requests_lib
 

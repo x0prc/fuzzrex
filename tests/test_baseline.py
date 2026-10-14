@@ -148,3 +148,19 @@ def test_run_baseline_matrix_applies_each_config(mock_cm, mock_run):
     assert mock_run.call_count == 2
     # every cell was probed against the orchestrator's base URL
     assert all(call.args[1] == "http://sut.test" for call in mock_run.call_args_list)
+
+
+@patch("fuzzrex.baseline.run_schemathesis")
+@patch("fuzzrex.baseline.configured_service")
+def test_run_baseline_matrix_defers_cells_and_restores_once(mock_cm, mock_run):
+    orch = MagicMock()
+    orch.base_url = "http://sut.test"
+    mock_cm.return_value.__enter__ = MagicMock(return_value=orch)
+    mock_cm.return_value.__exit__ = MagicMock(return_value=False)
+    mock_run.side_effect = lambda *a, config=None, **kw: BaselineResult(config, (), 0, 0)
+
+    results = run_baseline_matrix(orch, [{"a": 1}, {"a": 2}], "openapi.json", seed=3)
+
+    assert len(results) == 2
+    assert all(call.kwargs.get("defer") is True for call in mock_cm.call_args_list)
+    orch.restore.assert_called_once()
