@@ -14,3 +14,4 @@ findings/
 *.fuzz.yaml
 *.fuzz.yml
 .schemathesis/
+.DS_Store
