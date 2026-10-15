@@ -214,6 +214,12 @@ Reading the table:
   iteration 0.9, and the only SUT where feedback is significant in
   the joint direction (Δ=+9.20, p=0.002, n=10 — assembled across two
   runs via cross-run checkpoint resume).
+- **Reproducibility**: an independent fresh 10-seed rerun of the crAPI
+  campaign
+  ([run 38524313670](https://github.com/x0prc/fuzzrex/actions/runs/38524313670))
+  reproduced every non-timing field exactly — same divergent cells,
+  unique configs, kinds, and p=0.002 — at 2.4x lower wall time
+  (deferred restores; ~460 s/arm vs ~1090 s/arm).
 
 Analyze any campaign directory (stdlib only, exact paired sign-flip
 test):
