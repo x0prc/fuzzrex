@@ -11,6 +11,7 @@ A CLI tool that fuzzes REST APIs from their OpenAPI spec and mutates configurati
 3. **Differential oracle** — replays one planned request sequence under two config cells and flags security-relevant divergence only: `auth-boundary` (401/403 or redirect-to-login flips), `info-leak`, `server-error`, `status`, `transport`. Redirects are not followed, so login redirects are compared raw.
 4. **Joint Config×API search** — feedback loop that mutates the config, probes the API, and grows from divergent cells.
 5. **Baseline runner** — replays Schemathesis per config cell for the single-cell comparison arm.
+6. **Early stopping (opt-in)** — `run_comparison(..., stall_window=k)` stops a seed's joint arms once k consecutive iterations produce no new unique divergent cell; recorded per arm as `stopped_early`. Off by default, so the archived Phase 1 protocol is untouched.
 
 ## Installation
 
