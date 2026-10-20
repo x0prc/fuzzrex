@@ -12,6 +12,7 @@ A CLI tool that fuzzes REST APIs from their OpenAPI spec and mutates configurati
 4. **Joint Config×API search** — feedback loop that mutates the config, probes the API, and grows from divergent cells.
 5. **Baseline runner** — replays Schemathesis per config cell for the single-cell comparison arm.
 6. **Early stopping (opt-in)** — `run_comparison(..., stall_window=k)` stops a seed's joint arms once k consecutive iterations produce no new unique divergent cell; recorded per arm as `stopped_early`. Off by default, so the archived Phase 1 protocol is untouched.
+7. **Discovery** — `fuzzrex.discover` mechanizes fixture prep against a running baseline cell: `prune_spec` keeps only operations the deployment serves (dropping 404/501/transport-dead ones and anything chained to them), and `filter_knobs` keeps only candidate config keys whose values change an HTTP response.
 
 ## Installation
 
