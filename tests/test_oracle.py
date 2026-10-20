@@ -330,6 +330,96 @@ def test_restart_every_resets_mutation_base(mock_cm, mock_execute):
     assert mock_execute.call_count == RESTART_EVERY + 2
 
 
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_stall_window_stops_early(mock_cm, mock_execute):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    clean = [_snap(200)]
+    # baseline, then only clean cells: three stalls in a row -> stop
+    mock_execute.side_effect = [clean] + [clean] * 3
+
+    trace = run_joint_search_traced(
+        orch,
+        {"debug": False},
+        [_request("GET /x")],
+        iterations=10,
+        seed=1,
+        stall_window=3,
+    )
+
+    assert trace.stopped_early is True
+    assert trace.cells_visited == 3
+    assert trace.unique_cells == 0
+    assert mock_execute.call_count == 4  # baseline + 3 cells
+
+
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_new_unique_cell_resets_stall(mock_cm, mock_execute):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    baseline = [_snap(200)]
+    clean = [_snap(200)]
+    dirty = [_snap(401)]
+    # baseline, 2 stalls, 1 new unique divergent cell (reset), 3 stalls -> stop
+    mock_execute.side_effect = [baseline, clean, clean, dirty, clean, clean, clean]
+
+    with patch("fuzzrex.oracle.mutate_config") as mock_mutate:
+        mock_mutate.side_effect = [
+            {"debug": v} for v in (True, False, False, True, False, False)
+        ]
+        trace = run_joint_search_traced(
+            orch,
+            {"debug": False},
+            [_request("GET /admin")],
+            iterations=20,
+            seed=1,
+            stall_window=3,
+        )
+
+    assert trace.stopped_early is True
+    assert trace.cells_visited == 6
+    assert trace.unique_cells == 1
+    assert trace.first_divergence_iteration == 2
+
+
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_duplicate_divergence_counts_as_stall(mock_cm, mock_execute):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    baseline = [_snap(200)]
+    dirty = [_snap(401)]
+    # every cell diverges but is the same config: only the first is new
+    # unique; duplicates stall -> stop after 3 cells
+    mock_execute.side_effect = [baseline] + [dirty] * 3
+
+    with patch("fuzzrex.oracle.mutate_config") as mock_mutate:
+        mock_mutate.side_effect = [{"debug": True}] * 3
+        trace = run_joint_search_traced(
+            orch,
+            {"debug": False},
+            [_request("GET /admin")],
+            iterations=5,
+            seed=1,
+            stall_window=2,
+        )
+
+    assert trace.stopped_early is True
+    assert trace.cells_visited == 3
+    assert trace.divergent_cells and trace.unique_cells == 1
+
+
+def test_stall_window_validation():
+    orch, _ = _orchestrator_mock()
+    with pytest.raises(ValueError, match="stall_window"):
+        run_joint_search_traced(orch, {}, [], iterations=1, stall_window=0)
+
+
 def test_iterations_validation():
     orch, _ = _orchestrator_mock()
     with pytest.raises(ValueError, match="iterations"):
