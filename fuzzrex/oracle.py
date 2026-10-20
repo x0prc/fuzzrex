@@ -323,6 +323,7 @@ class SearchTrace:
     first_divergence_iteration: int | None
     first_divergence_s: float | None
     elapsed_s: float
+    stopped_early: bool = False
 
 
 def canonical_config(config: Any) -> str:
@@ -340,6 +341,7 @@ def run_joint_search_traced(
     timeout: float = DEFAULT_TIMEOUT,
     enums: dict[str, Any] | None = None,
     feedback: bool = True,
+    stall_window: int | None = None,
 ) -> SearchTrace:
     """Alternate config mutation and API probing; trace the whole run.
 
@@ -352,9 +354,17 @@ def run_joint_search_traced(
     arm -- every iteration mutates the baseline independently, so no
     divergence information ever influences where the search goes.
     `enums` constrains named keys to their allowed values during mutation.
+
+    `stall_window=None` disables early stopping. With `stall_window=k`,
+    the run stops (trace `stopped_early=True`) once k consecutive
+    iterations produced no *new* unique divergent cell; unhealthy,
+    non-divergent, and duplicate-divergent iterations all count as
+    stalls.
     """
     if iterations < 1:
         raise ValueError("iterations must be >= 1")
+    if stall_window is not None and stall_window < 1:
+        raise ValueError("stall_window must be >= 1 or None")
 
     rng = random.Random(seed)
     # Cells are applied with defer=True (disk-only exit, no restart) since
@@ -370,37 +380,50 @@ def run_joint_search_traced(
         visited = unhealthy = 0
         first_iteration: int | None = None
         first_at: float | None = None
+        seen_unique: set[str] = set()
+        stall = 0
+        stopped = False
         started = time.monotonic()
 
         for index in range(iterations):
             variant = mutate_config(mutation_base, rng, enums=enums)
+            new_unique = False
             try:
                 with configured_service(orchestrator, variant, defer=True):
                     snaps = execute_sequence(sequence, timeout=timeout)
             except OrchestratorError:
                 unhealthy += 1
-                continue
+            else:
+                visited += 1
+                divergences = compare_sequences(sequence, baseline_snaps, snaps)
+                if divergences:
+                    results.append(CellResult(variant, tuple(divergences)))
+                    if first_iteration is None:
+                        first_iteration = index
+                        first_at = time.monotonic() - started
+                    key = canonical_config(variant)
+                    if key not in seen_unique:
+                        seen_unique.add(key)
+                        new_unique = True
+                    if feedback:
+                        mutation_base = variant
+                elif feedback and index % RESTART_EVERY == RESTART_EVERY - 1:
+                    mutation_base = baseline_config
 
-            visited += 1
-            divergences = compare_sequences(sequence, baseline_snaps, snaps)
-            if divergences:
-                results.append(CellResult(variant, tuple(divergences)))
-                if first_iteration is None:
-                    first_iteration = index
-                    first_at = time.monotonic() - started
-                if feedback:
-                    mutation_base = variant
-            elif feedback and index % RESTART_EVERY == RESTART_EVERY - 1:
-                mutation_base = baseline_config
+            stall = 0 if new_unique else stall + 1
+            if stall_window is not None and stall >= stall_window:
+                stopped = True
+                break
 
         return SearchTrace(
             divergent_cells=tuple(results),
-            unique_cells=len({canonical_config(cell.config) for cell in results}),
+            unique_cells=len(seen_unique),
             cells_visited=visited,
             cells_unhealthy=unhealthy,
             first_divergence_iteration=first_iteration,
             first_divergence_s=first_at,
             elapsed_s=time.monotonic() - started,
+            stopped_early=stopped,
         )
     finally:
         orchestrator.restore()

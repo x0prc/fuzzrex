@@ -39,6 +39,7 @@ class ArmStats:
     first_divergence_iteration: int | None
     first_divergence_s: float | None
     elapsed_s: float
+    stopped_early: bool = False
 
 
 @dataclass
@@ -138,6 +139,7 @@ def run_comparison(
     timeout: float = 60.0,
     arms: Sequence[JointArm] = DEFAULT_ARMS,
     run_baseline: bool = True,
+    stall_window: int | None = None,
     on_seed: Callable[[SeedResult], None] | None = None,
 ) -> ComparisonResult:
     """Run every arm per seed against the same SUT.
@@ -146,6 +148,9 @@ def run_comparison(
     with its feedback setting. Baseline arm: Schemathesis once per
     config cell in `cells` (the static grid the joint search is free
     to navigate); skipped when `run_baseline` is false.
+    `stall_window` is forwarded to the joint arms (early stop after k
+    iterations without a new unique divergent cell); the baseline arm
+    always runs its full grid.
     """
     sequence = ApiFuzzer(spec_path, base_url=orchestrator.base_url).plan()
     result = ComparisonResult(name=name)
@@ -163,6 +168,7 @@ def run_comparison(
                 timeout=timeout,
                 enums=enums,
                 feedback=arm.feedback,
+                stall_window=stall_window,
             )
             kinds: Counter[str] = Counter(
                 divergence.kind
@@ -178,6 +184,7 @@ def run_comparison(
                 first_divergence_iteration=trace.first_divergence_iteration,
                 first_divergence_s=trace.first_divergence_s,
                 elapsed_s=trace.elapsed_s,
+                stopped_early=trace.stopped_early,
             )
 
         if run_baseline:
