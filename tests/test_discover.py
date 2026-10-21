@@ -26,6 +26,15 @@ def _write_spec(tmp_path, paths):
     return spec
 
 
+@pytest.fixture(autouse=True)
+def _canary(monkeypatch):
+    """Keep prune_spec's canary probe off the network unless a test overrides it."""
+    response = MagicMock(status_code=404)
+    send = MagicMock(return_value=response)
+    monkeypatch.setattr("fuzzrex.discover.send_request", send)
+    return response
+
+
 def _ok_path():
     return {"get": {"responses": {"200": {"description": "ok"}}}}
 
@@ -79,6 +88,17 @@ def test_prune_spec_raises_when_nothing_survives(mock_execute, tmp_path):
 
     orch, _ = _orchestrator_mock()
     with pytest.raises(ValueError, match="no operations survived"):
+        prune_spec(orch, spec)
+
+
+@patch("fuzzrex.discover.execute_sequence")
+def test_prune_spec_warns_when_reachability_is_blind(mock_execute, tmp_path, _canary):
+    _canary.status_code = 401  # auth middleware answers before routing
+    spec = _write_spec(tmp_path, {"/a": _ok_path()})
+    mock_execute.return_value = [_snap(200)]
+
+    orch, _ = _orchestrator_mock()
+    with pytest.warns(UserWarning, match="canary probe"):
         prune_spec(orch, spec)
 
 
