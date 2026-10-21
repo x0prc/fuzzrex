@@ -135,6 +135,22 @@ def test_filter_knobs_keeps_observable_keys_only(mock_cm, mock_execute):
 
 @patch("fuzzrex.discover.execute_sequence")
 @patch("fuzzrex.discover.configured_service")
+def test_filter_knobs_ignores_volatile_and_text_noise(mock_cm, mock_execute):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    base = _snap(200, body={"token": "a", "count": 1}, text="request abc")
+    noisy = _snap(200, body={"token": "b", "count": 1}, text="request xyz")
+    mock_execute.side_effect = [[base], [noisy]]
+
+    kept = filter_knobs(orch, {"flag": "x"}, {"flag": ["y"]}, [_request()])
+
+    # only the masked token and the raw text sample changed -> no evidence
+    assert kept == {}
+
+
+@patch("fuzzrex.discover.execute_sequence")
+@patch("fuzzrex.discover.configured_service")
 def test_filter_knobs_matches_nested_keys(mock_cm, mock_execute):
     orch, cm = _orchestrator_mock()
     mock_cm.return_value = cm
