@@ -26,6 +26,7 @@ from fuzzrex.oracle import (
     HttpRequest,
     ResponseSnapshot,
     execute_sequence,
+    is_sensitive_key,
     send_request,
 )
 from fuzzrex.orchestrator import (
@@ -141,16 +142,21 @@ def filter_knobs(
     For each (key, value) in `domains`, the baseline cell is cloned with
     that one leaf set to `value` and the sequence is replayed; a key is
     kept when any value yields a response snapshot different from the
-    baseline's (raw exact comparison: status, location, sensitive keys,
-    body, text sample). Values equal to the baseline value and values
-    that fail to deploy are skipped without evidence. The SUT must be
+    baseline's. The comparison is structured, not raw: status, Location,
+    and sensitive-key names must match, and the body must match after
+    masking sensitive keys (tokens, secrets, debug fields -- response
+    bodies like login tokens carry per-request material that is not
+    evidence of observability). The raw text sample is ignored for the
+    same reason. Values equal to the baseline value and values that
+    fail to deploy are skipped without evidence. The SUT must be
     running the baseline cell when called; it is restored (restart +
     health) before returning.
 
     Keys are matched by leaf name anywhere in the config tree (nested
-    documents included). Limitation: the comparison is exact, so a SUT
-    whose responses embed non-determinism (timestamps, nonces) will
-    make every key look observable.
+    documents included). Limitation: only sensitive-key volatility is
+    masked; a SUT that churns plain response fields (request ids,
+    timestamps under innocent names) will still make keys look
+    observable.
     """
     base_snaps = execute_sequence(sequence, timeout=timeout)
     kept: dict[str, list[Any]] = {}
@@ -184,4 +190,22 @@ def _snapshots_differ(
     baseline: Sequence[ResponseSnapshot],
     variant: Sequence[ResponseSnapshot],
 ) -> bool:
-    return any(base != var for base, var in zip(baseline, variant, strict=True))
+    for base, var in zip(baseline, variant, strict=True):
+        if (base.status_code, base.location, base.sensitive_keys) != (
+            var.status_code,
+            var.location,
+            var.sensitive_keys,
+        ):
+            return True
+        if _masked(base.body) != _masked(var.body):
+            return True
+    return False
+
+
+def _masked(node: Any) -> Any:
+    """Strip sensitive keys so per-request churn (tokens, secrets) is not evidence."""
+    if isinstance(node, dict):
+        return {k: _masked(v) for k, v in node.items() if not is_sensitive_key(str(k))}
+    if isinstance(node, list):
+        return [_masked(v) for v in node]
+    return node
