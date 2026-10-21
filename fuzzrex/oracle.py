@@ -17,6 +17,7 @@ from typing import Any
 import requests
 
 from fuzzrex.config_fuzzer import mutate_config
+from fuzzrex.mutation import mutate_request
 from fuzzrex.orchestrator import (
     DockerComposeOrchestrator,
     OrchestratorError,
@@ -310,6 +311,9 @@ class CellResult:
 
     config: Any
     divergences: tuple[Divergence, ...]
+    # With request-side mutation: the single-slot patch that defined the
+    # request variant this cell was replayed under (empty when fixed-sequence).
+    request_patch: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -324,11 +328,19 @@ class SearchTrace:
     first_divergence_s: float | None
     elapsed_s: float
     stopped_early: bool = False
+    request_iterations: int = 0
 
 
 def canonical_config(config: Any) -> str:
     """Canonical form for deduplicating configs (mutations never add keys)."""
     return json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _variant_key(patch: Mapping[str, Any]) -> str:
+    """Canonical form of a request-mutation patch; equal patches are the same variant."""
+    if not patch:
+        return ""
+    return json.dumps(patch, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def run_joint_search_traced(
@@ -342,6 +354,7 @@ def run_joint_search_traced(
     enums: dict[str, Any] | None = None,
     feedback: bool = True,
     stall_window: int | None = None,
+    request_mutation: float = 0.0,
 ) -> SearchTrace:
     """Alternate config mutation and API probing; trace the whole run.
 
@@ -360,11 +373,23 @@ def run_joint_search_traced(
     iterations produced no *new* unique divergent cell; unhealthy,
     non-divergent, and duplicate-divergent iterations all count as
     stalls.
+
+    `request_mutation=p` (default 0.0, the archived fixed-sequence
+    protocol) makes an iteration replay a single-slot mutated copy of
+    the planned sequence with probability p (p=1.0 mutates every
+    iteration). Pairing is preserved: the
+    variant's baseline snapshots are recorded lazily under c0 on first
+    use and cached, so both sides of every comparison see the same
+    request inputs and only the config can explain a divergence.
+    Mutations use a dedicated RNG seeded like the config one, so the
+    request schedule is identical across arms of the same seed.
     """
     if iterations < 1:
         raise ValueError("iterations must be >= 1")
     if stall_window is not None and stall_window < 1:
         raise ValueError("stall_window must be >= 1 or None")
+    if not 0.0 <= request_mutation <= 1.0:
+        raise ValueError("request_mutation must be in [0.0, 1.0]")
 
     rng = random.Random(seed)
     # Cells are applied with defer=True (disk-only exit, no restart) since
@@ -383,25 +408,43 @@ def run_joint_search_traced(
         seen_unique: set[str] = set()
         stall = 0
         stopped = False
+        request_iters = 0
+        rng_request = random.Random(seed) if request_mutation > 0.0 else None
+        variant_baselines: dict[str, list[ResponseSnapshot]] = {}
         started = time.monotonic()
 
         for index in range(iterations):
             variant = mutate_config(mutation_base, rng, enums=enums)
+            replay: list[HttpRequest] = sequence
+            base_key = ""
+            patch: dict[str, Any] = {}
+            if rng_request is not None and rng_request.random() < request_mutation:
+                request_iters += 1
+                replay, patch = mutate_request(sequence, rng_request)
+                base_key = _variant_key(patch)
             new_unique = False
             try:
+                if base_key:
+                    base_snaps = variant_baselines.get(base_key)
+                    if base_snaps is None:  # first sighting: record c0 under this variant
+                        with configured_service(orchestrator, baseline_config, defer=True):
+                            base_snaps = execute_sequence(replay, timeout=timeout)
+                        variant_baselines[base_key] = base_snaps
+                else:
+                    base_snaps = baseline_snaps
                 with configured_service(orchestrator, variant, defer=True):
-                    snaps = execute_sequence(sequence, timeout=timeout)
+                    snaps = execute_sequence(replay, timeout=timeout)
             except OrchestratorError:
                 unhealthy += 1
             else:
                 visited += 1
-                divergences = compare_sequences(sequence, baseline_snaps, snaps)
+                divergences = compare_sequences(replay, base_snaps, snaps)
                 if divergences:
-                    results.append(CellResult(variant, tuple(divergences)))
+                    results.append(CellResult(variant, tuple(divergences), request_patch=patch))
                     if first_iteration is None:
                         first_iteration = index
                         first_at = time.monotonic() - started
-                    key = canonical_config(variant)
+                    key = f"{canonical_config(variant)}|{base_key}"
                     if key not in seen_unique:
                         seen_unique.add(key)
                         new_unique = True
@@ -424,6 +467,7 @@ def run_joint_search_traced(
             first_divergence_s=first_at,
             elapsed_s=time.monotonic() - started,
             stopped_early=stopped,
+            request_iterations=request_iters,
         )
     finally:
         orchestrator.restore()
