@@ -11,13 +11,23 @@ observe; endpoint relevance to config gates stays fixture work.
 from __future__ import annotations
 
 import copy
+import secrets
+import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from fuzzrex.api_fuzzer import HTTP_METHODS, ApiFuzzer
 from fuzzrex.config_fuzzer import _collect_leaves
-from fuzzrex.oracle import DEFAULT_TIMEOUT, HttpRequest, ResponseSnapshot, execute_sequence
+from fuzzrex.oracle import (
+    DEFAULT_TIMEOUT,
+    HttpRequest,
+    ResponseSnapshot,
+    execute_sequence,
+    send_request,
+)
 from fuzzrex.orchestrator import (
     DockerComposeOrchestrator,
     OrchestratorError,
@@ -26,6 +36,32 @@ from fuzzrex.orchestrator import (
 from fuzzrex.schema import load_spec
 
 DEFAULT_DROP_STATUSES = frozenset({404, 501})
+
+
+def _warn_if_reachability_blind(
+    orchestrator: DockerComposeOrchestrator,
+    drop_statuses: frozenset[int],
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> None:
+    """Probe a random path; warn when its status says 'served'."""
+    canary = f"/fuzzrex-canary-{secrets.token_hex(4)}"
+    try:
+        response = send_request(
+            HttpRequest(method="GET", url=f"{orchestrator.base_url}{canary}"),
+            timeout=timeout,
+        )
+    except requests.RequestException:
+        return  # dead SUT: every probe fails and prune_spec raises anyway
+    if response.status_code not in drop_statuses:
+        warnings.warn(
+            f"canary probe {canary} answered {response.status_code}, which is not a "
+            f"drop status: an auth middleware or SPA catch-all is answering before "
+            f"routing, so status-based pruning cannot detect unserved operations on "
+            f"this SUT (chain a login via x-fuzzrex-token-from to probe "
+            f"authenticated)",
+            stacklevel=3,
+        )
 
 
 def prune_spec(
@@ -43,8 +79,16 @@ def prune_spec(
     operation whose token/param producer was removed (transitively).
     404/501 are treated as "not served" by default; specs where 404
     carries application semantics need a custom `drop_statuses`.
+
+    A canary probe to a random path runs first: if the deployment
+    answers it with a kept status, an auth middleware (or SPA
+    catch-all) responds before routing, status-based pruning cannot
+    detect unserved operations here, and a warning is emitted. Chaining
+    a login into the spec (`x-fuzzrex-token-from`) makes the probes
+    authenticated and unmasks 404s behind such middleware.
     """
     spec = load_spec(spec_path)
+    _warn_if_reachability_blind(orchestrator, drop_statuses, timeout=timeout)
     fuzzer = ApiFuzzer(str(spec_path), base_url=orchestrator.base_url, timeout=timeout)
     sequence = fuzzer.plan()
     snapshots = execute_sequence(sequence, timeout=timeout)
