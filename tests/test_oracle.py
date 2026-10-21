@@ -420,6 +420,69 @@ def test_stall_window_validation():
         run_joint_search_traced(orch, {}, [], iterations=1, stall_window=0)
 
 
+def test_request_mutation_validation():
+    orch, _ = _orchestrator_mock()
+    with pytest.raises(ValueError, match="request_mutation"):
+        run_joint_search_traced(orch, {}, [], iterations=1, request_mutation=1.5)
+
+
+@patch("fuzzrex.oracle.mutate_request")
+@patch("fuzzrex.oracle.mutate_config")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_request_mutation_pairs_variant_with_cached_baseline(
+    mock_cm, mock_execute, mock_config, mock_request,
+):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    mutated = [_request("GET /x-mutated")]
+    patch = {"label": "GET /x", "field": "params", "path": ["q"], "value": 99}
+    # both iterations draw the same variant -> second one must hit the cache
+    mock_request.side_effect = [(mutated, patch), (mutated, patch)]
+    mock_config.return_value = {"debug": True}
+    # planned-sequence baseline, c0-under-variant, cell 0, cell 1
+    mock_execute.side_effect = [[_snap(200)], [_snap(200)], [_snap(401)], [_snap(401)]]
+
+    trace = run_joint_search_traced(
+        orch,
+        {"debug": False},
+        [_request("GET /x")],
+        iterations=2,
+        seed=1,
+        request_mutation=1.0,
+    )
+
+    calls = mock_execute.call_args_list
+    # c0-under-variant recorded once, then two cells: no second baseline replay
+    assert mock_execute.call_count == 4
+    assert calls[0].args[0] == [_request("GET /x")]  # initial fixed-sequence baseline
+    assert all(call.args[0] == mutated for call in calls[1:])  # pair replay matches
+    assert trace.request_iterations == 2
+    assert trace.cells_visited == 2
+    assert trace.unique_cells == 1  # same (config, patch) pair twice
+    assert trace.divergent_cells[0].request_patch == patch
+
+
+@patch("fuzzrex.oracle.mutate_request")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_request_mutation_off_by_default(mock_cm, mock_execute, mock_request):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+    clean = [_snap(200)]
+    mock_execute.side_effect = [clean, clean, clean]
+
+    planned = [_request("GET /x")]
+    trace = run_joint_search_traced(orch, {"debug": False}, planned, iterations=2, seed=1)
+
+    mock_request.assert_not_called()
+    assert mock_execute.call_count == 3  # baseline + 2 cells, as in the fixed protocol
+    for call in mock_execute.call_args_list:
+        assert call.args[0] == planned
+    assert trace.request_iterations == 0
+
+
 def test_iterations_validation():
     orch, _ = _orchestrator_mock()
     with pytest.raises(ValueError, match="iterations"):

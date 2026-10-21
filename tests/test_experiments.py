@@ -29,6 +29,7 @@ def _trace(
     first_iter: int | None = None,
     unique: int | None = None,
     stopped: bool = False,
+    req_iters: int = 0,
 ) -> SearchTrace:
     cells = tuple(
         CellResult({"flag": True}, (Divergence("GET /x", "auth-boundary", "bypassed", 302, 200),))
@@ -43,6 +44,7 @@ def _trace(
         first_divergence_s=1.5 if first_iter is not None else None,
         elapsed_s=9.0,
         stopped_early=stopped,
+        request_iterations=req_iters,
     )
 
 
@@ -171,6 +173,34 @@ def test_run_comparison_forwards_stall_window(mock_traced, mock_baseline, tmp_pa
     assert mock_traced.call_args.kwargs["stall_window"] == 4
     assert result.seeds[0].arms["joint"].stopped_early is True
     assert result.to_dict()["seeds"][0]["arms"]["joint"]["stopped_early"] is True
+
+
+@patch("fuzzrex.experiments.run_baseline_matrix")
+@patch("fuzzrex.experiments.run_joint_search_traced")
+def test_run_comparison_forwards_request_mutation(mock_traced, mock_baseline, tmp_path):
+    spec = tmp_path / "openapi.json"
+    spec.write_text(
+        '{"openapi": "3.0.0", "paths": '
+        '{"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}}'
+    )
+    mock_traced.return_value = _trace(1, req_iters=7)
+
+    orch = MagicMock()
+    orch.base_url = "http://sut.test"
+    result = run_comparison(
+        orch,
+        {"flag": False},
+        str(spec),
+        [{"flag": False}],
+        seeds=(0,),
+        arms=(JointArm("joint"),),
+        run_baseline=False,
+        request_mutation=0.2,
+    )
+
+    assert mock_traced.call_args.kwargs["request_mutation"] == 0.2
+    assert result.seeds[0].arms["joint"].request_iterations == 7
+    assert result.to_dict()["seeds"][0]["arms"]["joint"]["request_iterations"] == 7
 
 
 def test_comparison_result_to_dict_is_json_ready():
