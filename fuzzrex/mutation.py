@@ -37,6 +37,8 @@ SPECIAL_STRINGS = (
 def mutate_request(
     sequence: Sequence[HttpRequest],
     rng: random.Random,
+    *,
+    skip_labels: frozenset[str] = frozenset(),
 ) -> tuple[list[HttpRequest], dict[str, Any]]:
     """Return the sequence with one scalar slot mutated plus its patch record.
 
@@ -44,13 +46,15 @@ def mutate_request(
     JSON body leaf in the sequence; its value is resampled from typed
     pools (booleans flip, ints/floats take boundary values, strings take
     a special-string pool, None becomes a string). Requests without
-    mutable slots (multipart-only, header-only) stay in the returned
-    sequence unchanged. The patch records the label, field, path, and
-    new value -- JSON-ready, so equal patches denote the same variant.
+    mutable slots (multipart-only, header-only) and requests whose label
+    is in `skip_labels` are never chosen. The patch records the label,
+    field, path, and new value -- JSON-ready, so equal patches denote
+    the same variant.
     """
     slots = [
         (index, field, path)
         for index, request in enumerate(sequence)
+        if request.label not in skip_labels
         for field, path in _slots_of(request)
     ]
     if not slots:
@@ -68,6 +72,30 @@ def mutate_request(
     result = list(sequence)
     result[index] = mutated
     return result, patch
+
+
+def vary_plan(
+    sequence: Sequence[HttpRequest],
+    rng: random.Random,
+    mutations: int,
+) -> list[HttpRequest]:
+    """Return the planned sequence with `mutations` accumulated slot mutations.
+
+    Per-seed plan variety: seeds no longer share one global plan.
+    Producer requests (those other requests draw tokens or params from)
+    are excluded so chained links keep resolving; everything else is
+    eligible. `mutations <= 0` returns the sequence unchanged, and a
+    sequence without eligible slots is never altered. Deterministic in
+    `rng`, so re-running a seed reproduces its plan.
+    """
+    if mutations <= 0:
+        return list(sequence)
+    producers = {request.token_from for request in sequence if request.token_from}
+    producers |= {label for request in sequence for label, _ in request.param_from.values()}
+    varied = list(sequence)
+    for _ in range(mutations):
+        varied, _ = mutate_request(varied, rng, skip_labels=frozenset(producers))
+    return varied
 
 
 def _slots_of(request: HttpRequest) -> Iterator[tuple[str, tuple[Any, ...]]]:

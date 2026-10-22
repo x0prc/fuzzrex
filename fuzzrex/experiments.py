@@ -7,6 +7,7 @@ JSON-serializable summary suitable for the results table.
 from __future__ import annotations
 
 import itertools
+import random
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -14,6 +15,7 @@ from typing import Any
 
 from fuzzrex.api_fuzzer import ApiFuzzer
 from fuzzrex.baseline import run_baseline_matrix
+from fuzzrex.mutation import vary_plan
 from fuzzrex.oracle import run_joint_search_traced
 from fuzzrex.orchestrator import DockerComposeOrchestrator
 
@@ -142,6 +144,7 @@ def run_comparison(
     run_baseline: bool = True,
     stall_window: int | None = None,
     request_mutation: float = 0.0,
+    plan_mutations: int = 0,
     on_seed: Callable[[SeedResult], None] | None = None,
 ) -> ComparisonResult:
     """Run every arm per seed against the same SUT.
@@ -154,18 +157,30 @@ def run_comparison(
     arms (early stop after k iterations without a new unique divergent
     cell; per-iteration request-side mutation with paired replays); the
     baseline arm always runs its full grid against the fixed sequence.
+    `plan_mutations=k` gives each seed its own plan: k request slots of
+    the planned sequence are varied per seed (deterministic in the
+    seed, producer requests excluded so chains keep resolving), so
+    seeds no longer share one global plan. k=0 keeps the archived
+    protocol.
     """
+    if plan_mutations < 0:
+        raise ValueError("plan_mutations must be >= 0")
     sequence = ApiFuzzer(spec_path, base_url=orchestrator.base_url).plan()
     result = ComparisonResult(name=name)
 
     for seed in seeds:
         seed_result = SeedResult(seed=seed)
+        seed_sequence = (
+            vary_plan(sequence, random.Random(f"plan:{seed}"), plan_mutations)
+            if plan_mutations
+            else sequence
+        )
 
         for arm in arms:
             trace = run_joint_search_traced(
                 orchestrator,
                 baseline_config,
-                sequence,
+                seed_sequence,
                 iterations=joint_iterations,
                 seed=seed,
                 timeout=timeout,
