@@ -1,4 +1,7 @@
+import json
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from fuzzrex.baseline import BaselineFinding, BaselineResult
 from fuzzrex.experiments import (
@@ -201,6 +204,67 @@ def test_run_comparison_forwards_request_mutation(mock_traced, mock_baseline, tm
     assert mock_traced.call_args.kwargs["request_mutation"] == 0.2
     assert result.seeds[0].arms["joint"].request_iterations == 7
     assert result.to_dict()["seeds"][0]["arms"]["joint"]["request_iterations"] == 7
+
+
+@patch("fuzzrex.experiments.run_baseline_matrix")
+@patch("fuzzrex.experiments.run_joint_search_traced")
+def test_run_comparison_varies_plan_per_seed(mock_traced, mock_baseline, tmp_path):
+    spec = tmp_path / "openapi.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "openapi": "3.0.0",
+                "paths": {
+                    "/x": {
+                        "get": {
+                            "parameters": [
+                                {"name": "q", "in": "query", "schema": {"type": "integer"}},
+                                {"name": "page", "in": "query", "schema": {"type": "integer"}},
+                            ],
+                            "responses": {"200": {"description": "ok"}},
+                        }
+                    }
+                },
+            }
+        )
+    )
+    mock_traced.return_value = _trace(0)
+
+    orch = MagicMock()
+    orch.base_url = "http://sut.test"
+    run_comparison(
+        orch, {"flag": False}, str(spec), [{"flag": False}],
+        seeds=(0, 1), arms=(JointArm("joint"),), run_baseline=False, plan_mutations=1,
+    )
+    varied = [call.args[2] for call in mock_traced.call_args_list]
+
+    mock_traced.reset_mock()
+    run_comparison(
+        orch, {"flag": False}, str(spec), [{"flag": False}],
+        seeds=(0, 1), arms=(JointArm("joint"),), run_baseline=False,
+    )
+    fixed = [call.args[2] for call in mock_traced.call_args_list]
+
+    # each seed got its own plan, and none is the global planned sequence
+    assert varied[0] != varied[1]
+    assert fixed[0] == fixed[1]
+    for seed_plan in varied:
+        assert seed_plan != fixed[0]
+        assert seed_plan[0].label == fixed[0][0].label  # structure intact
+
+
+@patch("fuzzrex.experiments.run_baseline_matrix")
+@patch("fuzzrex.experiments.run_joint_search_traced")
+def test_run_comparison_rejects_negative_plan_mutations(mock_traced, mock_baseline, tmp_path):
+    spec = tmp_path / "openapi.json"
+    spec.write_text(
+        '{"openapi": "3.0.0", "paths": '
+        '{"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}}'
+    )
+    orch = MagicMock()
+    orch.base_url = "http://sut.test"
+    with pytest.raises(ValueError, match="plan_mutations"):
+        run_comparison(orch, {}, str(spec), [{}], seeds=(0,), plan_mutations=-1)
 
 
 def test_comparison_result_to_dict_is_json_ready():
