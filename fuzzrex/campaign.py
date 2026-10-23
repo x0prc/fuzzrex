@@ -8,8 +8,11 @@ campaigns that use the stall window, request-side mutation, or
 per-seed plan variety.
 
 Cells file: either an explicit list of config documents, or a domains
-object {key: [values]} expanded with config_grid (which then also
-supplies the default enum constraints for mutation; --enums overrides).
+object {key: [values]} expanded with config_grid from the baseline
+document (dotted keys nest into it, e.g. auth.anonymous.enabled).
+Domains also supply the default enum constraints for mutation;
+--enums overrides. Resuming requires the same budget/feature
+arguments as the checkpoint, so protocols cannot be mixed.
 
 Usage:
   fuzzrex-campaign --compose examples/crapi/compose.yml --service crapi-identity \
@@ -23,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 import time
@@ -69,7 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--cells",
         required=True,
         type=Path,
-        help="config grid: list of configs, or domains {key: [values]}",
+        help="config grid: list of configs, or domains {key: [values]}; "
+        "dotted domain keys nest into the baseline document",
     )
     search.add_argument(
         "--enums", type=Path, help="enum constraints for mutation (default: domains from --cells)"
@@ -106,13 +111,78 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_cells(path: Path) -> tuple[list[dict], dict[str, Any] | None]:
+def _resolve_path(node: Any, parts: list[str]) -> tuple[dict, str] | None:
+    """Find (parent, leaf) for a dotted path, longest literal key match first.
+
+    Keys may themselves contain dots (INI-style sections like
+    ``auth.anonymous``), so each step tries the longest remaining suffix
+    as a literal key before falling back to a shorter prefix.
+    """
+    if not isinstance(node, dict):
+        return None
+    for j in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:j])
+        if candidate not in node:
+            continue
+        if j == len(parts):
+            return node, candidate
+        found = _resolve_path(node[candidate], parts[j:])
+        if found:
+            return found
+    return None
+
+
+def _apply_domain(doc: dict, key: str, value: Any) -> str:
+    """Set one domain value; returns the resolved leaf key.
+
+    Dotted keys nest into the document unless it literally contains that
+    key (INI-style sections like ``auth.anonymous`` are matched by the
+    longest literal prefix).
+    """
+    found = _resolve_path(doc, key.split("."))
+    if found is None:
+        raise SystemExit(f"--cells key {key!r} not found in --baseline-config")
+    parent, leaf = found
+    parent[leaf] = value
+    return leaf
+
+
+def _load_cells(path: Path, baseline: Any) -> tuple[list[dict], dict[str, Any] | None]:
+    """Return (cells, default enum constraints) for a --cells file.
+
+    A list is taken as explicit config documents (no default enums).
+    A domains object {key: [values]} expands with config_grid into full
+    cells starting from the baseline document; dotted keys nest into it
+    unless the baseline literally contains that dotted key. Default
+    enums are keyed the way config_fuzzer matches them: the leaf name
+    for nested keys, the literal key otherwise.
+    """
     data = load_document(path)
     if isinstance(data, list):
         return data, None
-    if isinstance(data, dict):
-        return config_grid(data), data
-    raise SystemExit(f"--cells must be a list of configs or a domains object: {path}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"--cells must be a list of configs or a domains object: {path}")
+    if not isinstance(baseline, dict):
+        raise SystemExit("--baseline-config must be a document (dict) when --cells is domains")
+    for key in data:
+        if any(other.startswith(f"{key}.") for other in data if other != key):
+            raise SystemExit(f"--cells keys conflict: {key!r} is a prefix of {key}...")
+
+    cells = []
+    leaves: dict[str, str] = {}
+    for combo in config_grid(data):
+        doc = copy.deepcopy(baseline)
+        for key, value in combo.items():
+            leaves[key] = _apply_domain(doc, key, value)
+        cells.append(doc)
+
+    enums: dict[str, Any] = {}
+    for key, values in data.items():
+        leaf = leaves[key]
+        if leaf in enums and enums[leaf] != values:
+            raise SystemExit(f"--cells domains map to one enum key {leaf!r} twice")
+        enums[leaf] = values
+    return cells, enums
 
 
 def _resolve_arms(names: str) -> tuple[JointArm, ...]:
@@ -150,8 +220,8 @@ def _write_checkpoint(path: Path, result: ComparisonResult, budget: dict) -> Non
 
 def run(args: argparse.Namespace) -> int:
     baseline = load_document(args.baseline_config)
-    cells, domains = _load_cells(args.cells)
-    enums = load_document(args.enums) if args.enums else domains
+    cells, default_enums = _load_cells(args.cells, baseline)
+    enums = load_document(args.enums) if args.enums else default_enums
     arms = _resolve_arms(args.arms)
     name = args.name or args.service
     out = args.out or Path("findings") / "campaigns" / f"{name}.json"
@@ -170,6 +240,23 @@ def run(args: argparse.Namespace) -> int:
     result = ComparisonResult(name=name)
     if out.is_file():
         previous = json.loads(out.read_text())
+        stored_budget = previous.get("budget") or {}
+        protocol_keys = (
+            "arms",
+            "stall_window",
+            "request_mutation",
+            "plan_mutations",
+            "joint_iterations",
+            "baseline_max_examples",
+            "grid_cells",
+        )
+        mismatched = [key for key in protocol_keys if stored_budget.get(key) != budget.get(key)]
+        if mismatched:
+            raise SystemExit(
+                f"checkpoint budget mismatch on {mismatched}: resuming would mix "
+                "protocols in one results file. Delete the checkpoint (or use a "
+                "different --out) or rerun with matching arguments."
+            )
         done = {s["seed"] for s in previous.get("seeds", [])}
         result.seeds = [_seed_from_dict(s) for s in previous.get("seeds", [])]
         print(f"resuming: {sorted(done)} already done", flush=True)
