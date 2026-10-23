@@ -25,6 +25,7 @@ baseline = [
 
 [project.scripts]
 fuzzrex = "fuzzrex.cli:main"
+fuzzrex-campaign = "fuzzrex.campaign:main"
 
 [tool.setuptools.packages.find]
 include = ["fuzzrex*"]
