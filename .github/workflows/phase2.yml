@@ -1,0 +1,151 @@
+name: Phase 2 campaign
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: SUT to campaign
+        type: choice
+        default: crapi
+        options: [all, dvwa, grafana, crapi]
+      fresh:
+        description: Ignore previous checkpoints (rerun every seed)
+        type: boolean
+        default: false
+      seeds:
+        description: Seeds (0..N-1)
+        default: "10"
+      iterations:
+        description: Joint iterations per seed
+        default: "30"
+      stall:
+        description: Stop a seed after k dry iterations (empty disables)
+        default: "8"
+      request_mutation:
+        description: Per-iteration request mutation probability
+        default: "0.2"
+      plan_mutations:
+        description: Per-seed plan mutations k
+        default: "2"
+
+concurrency:
+  group: phase2-campaign
+
+jobs:
+  campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sut: dvwa
+            health: http://127.0.0.1:4280/login.php
+            runner: >-
+              --compose examples/dvwa/compose.yml --service dvwa
+              --config examples/dvwa/matrix.json
+              --base-url http://127.0.0.1:4280 --health-path /login.php
+          - sut: grafana
+            health: http://127.0.0.1:3000/api/health
+            runner: >-
+              --compose examples/grafana/compose.yml --service grafana
+              --config examples/grafana/grafana.ini
+              --base-url http://127.0.0.1:3000 --health-path /api/health
+          - sut: crapi
+            health: http://127.0.0.1:8080/identity/health_check
+            runner: >-
+              --compose examples/crapi/compose.yml --service crapi-identity
+              --config examples/crapi/.env
+              --base-url http://127.0.0.1:8080
+              --health-path /identity/health_check --reload recreate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[baseline]"
+      - name: Resume from previous checkpoint
+        if: ${{ (inputs.target == 'all' || inputs.target == matrix.sut) && !inputs.fresh }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p findings/phase2
+          prev=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=phase2-checkpoint-${{ matrix.sut }}&per_page=5" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.id != ${{ github.run_id }})][0].workflow_run.id // empty')
+          if [ -n "$prev" ]; then
+            tmp=$(mktemp -d)
+            if gh run download "$prev" -R "${{ github.repository }}" -n "phase2-checkpoint-${{ matrix.sut }}" -D "$tmp"; then
+              find "$tmp" -name '*.json' -exec cp {} findings/phase2/ \;
+              echo "Resumed checkpoint from run $prev:"
+              ls -la findings/phase2/
+            else
+              echo "No resumable checkpoint (run $prev); starting fresh"
+            fi
+          else
+            echo "No previous checkpoint; starting fresh"
+          fi
+      - name: Warm up SUT
+        if: ${{ inputs.target == 'all' || inputs.target == matrix.sut }}
+        run: |
+          docker compose -f examples/${{ matrix.sut }}/compose.yml up -d
+          for i in $(seq 1 60); do
+            if curl -sf "${{ matrix.health }}" > /dev/null; then
+              echo "SUT healthy after $((i * 5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::SUT did not become healthy in 300s"
+          docker compose -f examples/${{ matrix.sut }}/compose.yml logs | tail -50
+          exit 1
+      - name: Run campaign
+        if: ${{ inputs.target == 'all' || inputs.target == matrix.sut }}
+        run: |
+          FLAGS="--seeds ${{ inputs.seeds }} --iterations ${{ inputs.iterations }} --request-mutation ${{ inputs.request_mutation }} --plan-mutations ${{ inputs.plan_mutations }} --spec examples/${{ matrix.sut }}/openapi.yml --baseline-config examples/${{ matrix.sut }}/baseline.json --cells examples/${{ matrix.sut }}/cells.json --name ${{ matrix.sut }} --out findings/phase2/${{ matrix.sut }}.json"
+          if [ -n "${{ inputs.stall }}" ]; then
+            FLAGS="$FLAGS --stall ${{ inputs.stall }}"
+          fi
+          fuzzrex-campaign ${{ matrix.runner }} $FLAGS
+      - name: Upload checkpoint
+        if: ${{ always() && (inputs.target == 'all' || inputs.target == matrix.sut) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-checkpoint-${{ matrix.sut }}
+          path: findings/phase2/${{ matrix.sut }}.json
+          if-no-files-found: ignore
+
+  analyze:
+    needs: campaign
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e .
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          pattern: phase2-checkpoint-*
+          path: findings/phase2
+          merge-multiple: true
+      - name: Summarize
+        run: |
+          python -m fuzzrex.analysis findings/phase2 | tee analysis.txt
+          {
+            echo "### Phase 2 campaign results"
+            echo '```'
+            cat analysis.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-analysis
+          path: |
+            findings/phase2/per_seed.csv
+            analysis.txt
