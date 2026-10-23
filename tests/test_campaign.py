@@ -49,6 +49,13 @@ def _files(tmp_path, cells='{"flag": [false, true]}'):
     ], out
 
 
+def _one_seed(orch, baseline, spec, cells, **kwargs):
+    return ComparisonResult(
+        name=kwargs["name"],
+        seeds=[SeedResult(seed=kwargs["seeds"][0], arms={"joint": _stats()})],
+    )
+
+
 def test_parser_requires_sut_and_search_arguments():
     parser = build_parser()
     with pytest.raises(SystemExit):
@@ -62,23 +69,66 @@ def test_parser_requires_sut_and_search_arguments():
     assert args.reload == "restart"
 
 
-def test_load_cells_domains_grid_and_explicit_list(tmp_path):
+def test_load_cells_domains_grid_from_baseline(tmp_path):
     domains = tmp_path / "domains.json"
     domains.write_text('{"a": [1, 2], "b": [true, false]}')
-    cells, parsed_domains = _load_cells(domains)
+    cells, enums = _load_cells(domains, {"a": 0, "b": True})
     assert len(cells) == 4
-    assert parsed_domains == {"a": [1, 2], "b": [True, False]}
+    # every cell is the baseline document with the domain keys applied
+    assert all(set(cell) == {"a", "b"} for cell in cells)
+    assert {"a": 2, "b": False} in cells
+    assert enums == {"a": [1, 2], "b": [True, False]}
 
+
+def test_load_cells_explicit_list_keeps_documents_and_no_default_enums(tmp_path):
     explicit = tmp_path / "cells.json"
     explicit.write_text('[{"flag": false}, {"flag": true}]')
-    cells, parsed_domains = _load_cells(explicit)
+    cells, enums = _load_cells(explicit, {"flag": False})
     assert cells == [{"flag": False}, {"flag": True}]
-    assert parsed_domains is None
+    assert enums is None
 
     bad = tmp_path / "bad.json"
     bad.write_text('"nope"')
     with pytest.raises(SystemExit, match="--cells"):
-        _load_cells(bad)
+        _load_cells(bad, {"flag": False})
+
+
+def test_load_cells_dotted_domains_nest_into_baseline(tmp_path):
+    path = tmp_path / "domains.json"
+    path.write_text('{"auth.anonymous.enabled": [false, true]}')
+    baseline = {"auth.anonymous": {"enabled": False}}
+    cells, enums = _load_cells(path, baseline)
+    assert cells == [
+        {"auth.anonymous": {"enabled": False}},
+        {"auth.anonymous": {"enabled": True}},
+    ]
+    assert enums == {"enabled": [False, True]}  # leaf name, as config_fuzzer matches
+
+
+def test_load_cells_literal_dotted_key_stays_flat(tmp_path):
+    path = tmp_path / "domains.json"
+    path.write_text('{"log4j.appender.file": ["a", "b"]}')
+    baseline = {"log4j.appender.file": "a"}
+    cells, enums = _load_cells(path, baseline)
+    assert cells == [{"log4j.appender.file": "a"}, {"log4j.appender.file": "b"}]
+    assert enums == {"log4j.appender.file": ["a", "b"]}
+
+
+def test_load_cells_rejects_unknown_and_conflicting_keys(tmp_path):
+    unknown = tmp_path / "unknown.json"
+    unknown.write_text('{"missing.key": [1]}')
+    with pytest.raises(SystemExit, match="not found"):
+        _load_cells(unknown, {"flag": False})
+
+    conflict = tmp_path / "conflict.json"
+    conflict.write_text('{"a": [1], "a.b": [2]}')
+    with pytest.raises(SystemExit, match="prefix"):
+        _load_cells(conflict, {"a": 1})
+
+    scalar_baseline = tmp_path / "domains.json"
+    scalar_baseline.write_text('{"flag": [true]}')
+    with pytest.raises(SystemExit, match="baseline-config"):
+        _load_cells(scalar_baseline, "not-a-document")
 
 
 def test_resolve_arms_filters_and_rejects_unknown():
@@ -103,20 +153,15 @@ def test_stale_checkpoint_rejected():
 @patch("fuzzrex.campaign.DockerComposeOrchestrator")
 def test_run_resumes_done_seeds_and_checkpoints(mock_orch, mock_compare, tmp_path):
     argv, out = _files(tmp_path)
-    previous = ComparisonResult(name="sut", seeds=[SeedResult(seed=0, arms={"joint": _stats()})])
-    out.parent.mkdir(parents=True)
-    out.write_text(json.dumps(previous.to_dict()))
-
-    def _one_seed(orch, baseline, spec, cells, **kwargs):
-        return ComparisonResult(
-            name=kwargs["name"],
-            seeds=[SeedResult(seed=kwargs["seeds"][0], arms={"joint": _stats()})],
-        )
-
     mock_compare.side_effect = _one_seed
-    code = main(REQUIRED + argv + ["--seeds", "2"])
 
-    assert code == 0
+    assert main(REQUIRED + argv + ["--seeds", "1"]) == 0
+    mock_compare.reset_mock()
+    mock_orch.return_value.up.reset_mock()
+    mock_orch.return_value.restore.reset_mock()
+
+    # second invocation resumes: only seed 1 runs, checkpoint holds both
+    assert main(REQUIRED + argv + ["--seeds", "2"]) == 0
     assert mock_compare.call_count == 1
     assert mock_compare.call_args.kwargs["seeds"] == (1,)
     stored = json.loads(out.read_text())
@@ -124,6 +169,19 @@ def test_run_resumes_done_seeds_and_checkpoints(mock_orch, mock_compare, tmp_pat
     assert stored["budget"]["grid_cells"] == 2
     mock_orch.return_value.up.assert_called_once()
     mock_orch.return_value.restore.assert_called_once()
+
+
+@patch("fuzzrex.campaign.run_comparison")
+@patch("fuzzrex.campaign.DockerComposeOrchestrator")
+def test_run_rejects_resume_with_a_different_protocol(mock_orch, mock_compare, tmp_path):
+    argv, out = _files(tmp_path)
+    mock_compare.side_effect = _one_seed
+    assert main(REQUIRED + argv + ["--seeds", "1"]) == 0
+
+    with pytest.raises(SystemExit, match="budget mismatch.*stall_window"):
+        main(REQUIRED + argv + ["--seeds", "1", "--stall", "8"])
+    assert mock_compare.call_count == 1  # no mixed-protocol run happened
+    assert mock_orch.return_value.up.call_count == 1
 
 
 @patch("fuzzrex.campaign.run_comparison")
@@ -181,10 +239,11 @@ def test_run_returns_one_and_keeps_checkpoint_on_sut_failure(mock_orch, mock_com
 @patch("fuzzrex.campaign.run_comparison")
 @patch("fuzzrex.campaign.DockerComposeOrchestrator")
 def test_run_short_circuits_when_all_seeds_done(mock_orch, mock_compare, tmp_path):
-    argv, out = _files(tmp_path)
-    previous = ComparisonResult(name="sut", seeds=[SeedResult(seed=0, arms={"joint": _stats()})])
-    out.parent.mkdir(parents=True)
-    out.write_text(json.dumps(previous.to_dict()))
+    argv, _ = _files(tmp_path)
+    mock_compare.side_effect = _one_seed
+    assert main(REQUIRED + argv + ["--seeds", "1"]) == 0
+    mock_compare.reset_mock()
+    mock_orch.return_value.up.reset_mock()
 
     assert run(build_parser().parse_args(REQUIRED + argv + ["--seeds", "1"])) == 0
     mock_compare.assert_not_called()
