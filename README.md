@@ -182,6 +182,35 @@ video id resolved per config cell at send time), and both knobs are
 probe-verified: shell-injection flips `convert_video` 500↔200, TLS flips
 every endpoint 200↔400.
 
+### Campaign runner (fuzzrex-campaign)
+
+`fuzzrex-campaign` (equivalently `python -m fuzzrex.campaign`) runs the
+full comparison against any docker-compose SUT from the command line
+with per-seed checkpointing — re-running skips completed seeds
+(crash-safe resume):
+
+```bash
+fuzzrex-campaign \
+  --compose examples/crapi/compose.yml --service crapi-identity \
+  --config examples/crapi/.env --base-url http://127.0.0.1:8080 \
+  --health-path /identity/health_check --reload recreate \
+  --spec examples/crapi/openapi.yml \
+  --baseline-config baseline.json --cells knobs.json \
+  --out findings/phase2/crapi.json \
+  --seeds 10 --iterations 30 --stall 8 \
+  --request-mutation 0.2 --plan-mutations 2
+```
+
+`--baseline-config` is the baseline cell (JSON/YAML/INI). `--cells`
+takes either an explicit list of config documents or a domains object
+`{key: [values]}` expanded with `config_grid`; domains then double as
+the default enum constraints for mutation (`--enums` overrides — needed
+when cells are an explicit nested list, as with grafana). `--arms`
+selects joint arms by name, `--no-baseline` skips the Schemathesis
+arm. The checkpoint JSON records the whole budget (arms, stall,
+mutation probabilities) for provenance. Phase 1's archived protocol
+stays in `examples/phase1_campaign.py`, untouched.
+
 ### Phase 1: joint vs baseline vs ablation
 
 `fuzzrex.experiments.run_comparison` runs three arms under matched
