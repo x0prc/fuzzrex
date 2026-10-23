@@ -203,13 +203,18 @@ fuzzrex-campaign \
 
 `--baseline-config` is the baseline cell (JSON/YAML/INI). `--cells`
 takes either an explicit list of config documents or a domains object
-`{key: [values]}` expanded with `config_grid`; domains then double as
-the default enum constraints for mutation (`--enums` overrides — needed
-when cells are an explicit nested list, as with grafana). `--arms`
-selects joint arms by name, `--no-baseline` skips the Schemathesis
-arm. The checkpoint JSON records the whole budget (arms, stall,
-mutation probabilities) for provenance. Phase 1's archived protocol
-stays in `examples/phase1_campaign.py`, untouched.
+`{key: [values]}` expanded with `config_grid` from the baseline —
+dotted domain keys nest into it (grafana:
+`auth.anonymous.enabled`, literal dotted keys stay flat), and every
+cell is the baseline with the domain keys applied. Domains double as
+the default enum constraints for mutation, keyed by the resolved leaf
+name (`--enums` overrides). `--arms` selects joint arms by name,
+`--no-baseline` skips the Schemathesis arm. The checkpoint JSON
+records the whole budget (arms, stall, mutation probabilities) for
+provenance, and resuming refuses a checkpoint whose protocol differs
+from the current arguments, so budgets can never be mixed in one
+results file. Phase 1's archived protocol stays in
+`examples/phase1_campaign.py`, untouched.
 
 ### Phase 1: joint vs baseline vs ablation
 
