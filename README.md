@@ -283,6 +283,16 @@ long jobs resume across attempts instead of restarting (dispatch with
 the summary table to the workflow's step summary plus
 `phase1-analysis` (CSV + report).
 
+**Actions → Phase 2 campaign** runs the same fixtures through
+`fuzzrex-campaign` with the research features on by default
+(`stall=8`, `request_mutation=0.2`, `plan_mutations=2`, all
+overridable per dispatch; empty `stall` disables the stop rule).
+Checkpoints live in separate `phase2-checkpoint-<sut>` artifacts so
+Phase 1's analysis never sees them, and the runner refuses to resume a
+checkpoint whose recorded budget differs from the dispatched
+arguments — change features, start a new `--out` (or dispatch
+`fresh`). The analyze job summarizes into `phase2-analysis`.
+
 ## Development
 
 ```bash
