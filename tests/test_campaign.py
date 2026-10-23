@@ -1,11 +1,16 @@
+import importlib.util
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from fuzzrex.campaign import _load_cells, _resolve_arms, _seed_from_dict, build_parser, main, run
-from fuzzrex.experiments import ArmStats, ComparisonResult, SeedResult
+from fuzzrex.experiments import ArmStats, ComparisonResult, SeedResult, config_grid
 from fuzzrex.orchestrator import OrchestratorError
+from fuzzrex.schema import load_document
+
+REPO = Path(__file__).resolve().parent.parent
 
 REQUIRED = [
     "--compose", "compose.yml",
@@ -147,6 +152,56 @@ def test_stale_checkpoint_rejected():
             {"seed": 0, "arms": {"joint": {"divergent_cells": 1}},
              "baseline_findings": 0, "baseline_per_cell": [], "baseline_signatures": []}
         )
+
+
+def _load_phase1_module():
+    spec = importlib.util.spec_from_file_location(
+        "phase1_campaign", REPO / "examples" / "phase1_campaign.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_fixture_inputs_reproduce_the_phase1_protocol():
+    """The committed baseline/cells files must yield exactly the inputs
+    examples/phase1_campaign.py hardcodes, so CLI campaigns are
+    comparable with the archived Phase-1 numbers."""
+    phase1 = _load_phase1_module()
+
+    # crAPI: flat domains -> identical grid and enum pools
+    crapi = REPO / "examples" / "crapi"
+    assert load_document(crapi / "baseline.json") == {
+        "ENABLE_SHELL_INJECTION": False,
+        "TLS_ENABLED": False,
+    }
+    cells, enums = _load_cells(crapi / "cells.json", load_document(crapi / "baseline.json"))
+    assert cells == config_grid(phase1.CRAPI_KNOBS)
+    assert enums == phase1.CRAPI_KNOBS
+
+    # DVWA: 8-cell grid; the bool domain appears in the default enums too,
+    # but it pools {false,true} exactly like fuzz_boolean did in Phase 1
+    dvwa = REPO / "examples" / "dvwa"
+    assert load_document(dvwa / "baseline.json") == {
+        "disable_authentication": False,
+        "default_security_level": "low",
+    }
+    cells, enums = _load_cells(dvwa / "cells.json", load_document(dvwa / "baseline.json"))
+    assert cells == config_grid(
+        {"disable_authentication": [False, True], "default_security_level": phase1.DVWA_LEVELS}
+    )
+    assert enums["default_security_level"] == phase1.DVWA_LEVELS
+
+    # grafana: dotted domain nests through the INI-style section
+    grafana = REPO / "examples" / "grafana"
+    baseline = load_document(grafana / "baseline.json")
+    assert baseline == {"auth.anonymous": {"enabled": False}}
+    cells, enums = _load_cells(grafana / "cells.json", baseline)
+    assert cells == [
+        {"auth.anonymous": {"enabled": False}},
+        {"auth.anonymous": {"enabled": True}},
+    ]
+    assert enums == {"enabled": [False, True]}
 
 
 @patch("fuzzrex.campaign.run_comparison")
