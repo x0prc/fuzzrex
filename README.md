@@ -195,11 +195,17 @@ fuzzrex-campaign \
   --config examples/crapi/.env --base-url http://127.0.0.1:8080 \
   --health-path /identity/health_check --reload recreate \
   --spec examples/crapi/openapi.yml \
-  --baseline-config baseline.json --cells knobs.json \
+  --baseline-config examples/crapi/baseline.json \
+  --cells examples/crapi/cells.json \
   --out findings/phase2/crapi.json \
   --seeds 10 --iterations 30 --stall 8 \
   --request-mutation 0.2 --plan-mutations 2
 ```
+
+Each fixture ships `baseline.json` + `cells.json` next to its compose
+file, and a test pins them to the exact inputs
+`examples/phase1_campaign.py` hardcodes, so CLI campaigns stay
+comparable with the archived Phase-1 protocol.
 
 `--baseline-config` is the baseline cell (JSON/YAML/INI). `--cells`
 takes either an explicit list of config documents or a domains object
