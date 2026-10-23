@@ -1,0 +1,4 @@
+{
+  "disable_authentication": [false, true],
+  "default_security_level": ["low", "medium", "high", "impossible"]
+}

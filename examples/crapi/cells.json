@@ -1,0 +1,4 @@
+{
+  "ENABLE_SHELL_INJECTION": [false, true],
+  "TLS_ENABLED": [false, true]
+}
