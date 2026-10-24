@@ -15,6 +15,7 @@ A CLI tool that fuzzes REST APIs from their OpenAPI spec and mutates configurati
 7. **Discovery** — `fuzzrex.discover` mechanizes fixture prep against a running baseline cell: `prune_spec` keeps only operations the deployment serves (dropping 404/501/transport-dead ones and anything chained to them) and warns when a canary probe shows an auth middleware answering before routing, which makes reachability unverifiable without a chained login; `filter_knobs` keeps only candidate config keys whose values change an HTTP response.
 8. **Request-side mutation (opt-in)** — `run_comparison(..., request_mutation=p)` makes an iteration replay a single-slot mutated copy of the planned sequence with probability p (query/cookie/JSON-body scalars resampled from typed boundary pools; methods, URLs, links, and files untouched). Pairing is preserved by lazily recording and caching each variant's baseline under c0, so only the config can explain a divergence; divergent cells record the patch that defined their request variant. Default 0.0 reproduces the fixed-sequence protocol exactly.
 9. **Per-seed plan variety (opt-in)** — `run_comparison(..., plan_mutations=k)` re-varies k request slots of the planned sequence per seed from the same typed pools (deterministic in the seed; producer requests like logins are excluded so chained links keep resolving), so seeds no longer share one global plan. 0 keeps the archived protocol.
+10. **Interaction classification (opt-in)** — when request-side mutation records per-visit detail, `fuzzrex.analysis` classifies every unique (config, patch) finding into the Config×API taxonomy: `interaction` (patch diverges only under this config, is clean at c0, and the original request is clean there — both changes required), `config_only`, `config_reproducible` (the config alone reproduces it), `request_sufficient` (the patch alone already diverges at c0), and `unclassified` when a counterfactual context is missing. Detail is serialized only when recorded, so Phase 1 checkpoints keep their exact shape; the report shows per-arm counts plus interaction case studies, and the per-seed CSV gains the classification rows alongside `stopped_early`/`request_iterations`.
 
 ## Installation
 
@@ -291,7 +292,8 @@ Checkpoints live in separate `phase2-checkpoint-<sut>` artifacts so
 Phase 1's analysis never sees them, and the runner refuses to resume a
 checkpoint whose recorded budget differs from the dispatched
 arguments — change features, start a new `--out` (or dispatch
-`fresh`). The analyze job summarizes into `phase2-analysis`.
+`fresh`). The analyze job summarizes into `phase2-analysis` (table,
+paired test, interaction classification, CSV).
 
 ## Development
 
