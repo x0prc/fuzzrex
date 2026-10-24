@@ -52,6 +52,11 @@ class SeedResult:
     baseline_findings: int = 0
     baseline_per_cell: list[int] = field(default_factory=list)
     baseline_signatures: list[str] = field(default_factory=list)
+    # Per-arm interaction detail; only populated (and only serialized)
+    # when request-side mutation recorded it, so archived checkpoints
+    # keep their exact shape.
+    visits: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    request_variants: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -115,8 +120,19 @@ class ComparisonResult:
             "mean_baseline_findings": self.mean_baseline_findings,
             "baseline_unique_findings": len(self.baseline_unique_signatures),
             "baseline_signatures": self.baseline_unique_signatures,
-            "seeds": [asdict(s) for s in self.seeds],
+            "seeds": [_seed_payload(s) for s in self.seeds],
         }
+
+
+def _seed_payload(seed: SeedResult) -> dict[str, Any]:
+    payload = asdict(seed)
+    # Archived (Phase 1) checkpoints must stay byte-exact: detail keys
+    # appear only when the run recorded them.
+    if not payload.get("visits"):
+        payload.pop("visits", None)
+    if not payload.get("request_variants"):
+        payload.pop("request_variants", None)
+    return payload
 
 
 def config_grid(domains: dict[str, Sequence[Any]]) -> list[dict[str, Any]]:
@@ -206,6 +222,10 @@ def run_comparison(
                 stopped_early=trace.stopped_early,
                 request_iterations=trace.request_iterations,
             )
+            if trace.visits:
+                seed_result.visits[arm.name] = list(trace.visits)
+            if trace.request_variants:
+                seed_result.request_variants[arm.name] = list(trace.request_variants)
 
         if run_baseline:
             baseline = run_baseline_matrix(

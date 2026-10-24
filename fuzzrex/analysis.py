@@ -1,8 +1,11 @@
-"""Analysis pipeline: campaign JSON -> summary table, significance, CSV.
+"""Analysis pipeline: campaign JSON -> summary table, significance, interactions.
 
 Stdlib-only (exact paired sign-flip test instead of scipy). Run as
 `python -m fuzzrex.analysis findings/phase1` or import `load_results`
-and friends for notebooks.
+and friends for notebooks. When request-side mutation recorded per-visit
+detail, divergent findings are classified into the Config x API
+interaction taxonomy (config-only / interaction / request-sufficient /
+...).
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import json
 import random
 import statistics
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +30,8 @@ ARM_METRICS = (
     "cells_visited",
     "cells_unhealthy",
     "elapsed_s",
+    "stopped_early",
+    "request_iterations",
 )
 
 
@@ -85,6 +91,128 @@ def summarize_arm(payload: dict[str, Any], arm: str) -> ArmSummary:
         mean_unhealthy=statistics.fmean(r["cells_unhealthy"] for r in rows),
         mean_elapsed=statistics.fmean(r["elapsed_s"] for r in rows),
     )
+
+
+def _canonical(value: Any) -> str:
+    """Canonical JSON, mirroring oracle.canonical_config/_variant_key."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def classify_findings(
+    visits: Sequence[dict[str, Any]], variants: Sequence[dict[str, Any]]
+) -> dict[str, Any]:
+    """Classify divergent visits into the Config x API interaction taxonomy.
+
+    Each finding is one unique (config, patch) pair. Unpatched findings
+    are `config_only`. Patched findings take the counterfactual context
+    into account, most restrictive first:
+
+    - config_reproducible: the original request also diverged at this
+      config, so the config alone reproduces the finding;
+    - request_sufficient: the patch already diverged against the
+      original sequence at c0, so the request change alone suffices;
+    - interaction: the patch diverges only under this config, is clean
+      at c0, and the original request is clean while healthy here -
+      both changes are required;
+    - unclassified: missing counterfactual context (the config was never
+      visited unpatched while healthy, or the variant's c0 record is
+      missing).
+
+    Also reports how many distinct patches were tried and how many
+    already diverged at c0 (pure request-side findings).
+    """
+    variants_by_patch = {_canonical(v.get("patch")): v for v in variants}
+    context: dict[str, dict[str, bool]] = {}
+    for visit in visits:
+        if visit.get("patch") or not visit.get("healthy", True):
+            continue
+        slot = context.setdefault(
+            _canonical(visit.get("config")), {"divergent": False, "clean": False}
+        )
+        if visit.get("divergent"):
+            slot["divergent"] = True
+        else:
+            slot["clean"] = True
+
+    counts: Counter[str] = Counter()
+    interactions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for visit in visits:
+        if not visit.get("divergent"):
+            continue
+        patch = visit.get("patch") or {}
+        key = f"{_canonical(visit.get('config'))}|{_canonical(patch)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        if not patch:
+            classification = "config_only"
+        else:
+            slot = context.get(_canonical(visit.get("config")), {})
+            record = variants_by_patch.get(_canonical(patch))
+            diverges_at_c0 = None if record is None else bool(record.get("diverges_at_c0"))
+            if slot.get("divergent"):
+                classification = "config_reproducible"
+            elif diverges_at_c0 is True:
+                classification = "request_sufficient"
+            elif slot.get("clean") and diverges_at_c0 is False:
+                classification = "interaction"
+            else:
+                classification = "unclassified"
+        counts[classification] += 1
+        if classification == "interaction":
+            interactions.append(
+                {"config": visit.get("config"), "patch": patch, "kinds": visit.get("kinds", [])}
+            )
+    return {
+        "findings": dict(counts),
+        "total_unique": sum(counts.values()),
+        "patches_tried": len(variants),
+        "patches_divergent_c0": sum(1 for v in variants if v.get("diverges_at_c0")),
+        "interactions": interactions,
+    }
+
+
+def arm_interactions(payload: dict[str, Any], arm: str) -> dict[str, Any] | None:
+    """Classification aggregated over seeds for one arm.
+
+    Returns None when no seed recorded interaction detail (e.g. the
+    archived Phase 1 checkpoints), so reports degrade cleanly.
+    """
+    totals: dict[str, Any] | None = None
+    for seed in payload.get("seeds", []):
+        seed_visits = seed.get("visits", {}).get(arm)
+        if seed_visits is None:
+            continue
+        result = classify_findings(
+            seed_visits, seed.get("request_variants", {}).get(arm, [])
+        )
+        if totals is None:
+            totals = {
+                "findings": Counter(),
+                "patches_tried": 0,
+                "patches_divergent_c0": 0,
+                "interactions": [],
+            }
+        totals["findings"].update(result["findings"])
+        totals["patches_tried"] += result["patches_tried"]
+        totals["patches_divergent_c0"] += result["patches_divergent_c0"]
+        totals["interactions"].extend(result["interactions"])
+    if totals is None:
+        return None
+    totals["findings"] = dict(totals["findings"])
+    totals["total_unique"] = sum(totals["findings"].values())
+    # seeds are independent trials (counts sum), but the example case
+    # studies are deduplicated so the report doesn't repeat them per seed
+    seen_cases: set[str] = set()
+    unique_cases = []
+    for case in totals["interactions"]:
+        key = _canonical(case)
+        if key not in seen_cases:
+            seen_cases.add(key)
+            unique_cases.append(case)
+    totals["interactions"] = unique_cases
+    return totals
 
 
 def sign_flip_pvalue(diffs: Sequence[float], *, max_exact: int = 20) -> tuple[float, bool]:
@@ -176,7 +304,44 @@ def render_report(payload: dict[str, Any]) -> str:
             f"Δ={test.mean_diff:+.2f}, p={test.p_value:.4f} "
             f"({method} sign-flip, n={test.n_pairs})"
         )
+
+    usage = []
+    for arm in arms:
+        rows = [s["arms"][arm] for s in payload.get("seeds", []) if arm in s.get("arms", {})]
+        req = sum(r.get("request_iterations", 0) for r in rows)
+        stopped = sum(1 for r in rows if r.get("stopped_early"))
+        if req or stopped:
+            usage.append(f"{arm}: req-iters={req}, stopped={stopped}/{len(rows)} seeds")
+    if usage:
+        lines.append("feature usage: " + "; ".join(usage))
+
+    detail = [(arm, arm_interactions(payload, arm)) for arm in arms]
+    detail = [(arm, found) for arm, found in detail if found]
+    if detail:
+        lines.append("interaction classification (unique findings, summed over seeds):")
+        for arm, found in detail:
+            counts = found["findings"]
+            lines.append(
+                f"  {arm}: interaction={counts.get('interaction', 0)} "
+                f"config-only={counts.get('config_only', 0)} "
+                f"config-reproducible={counts.get('config_reproducible', 0)} "
+                f"request-sufficient={counts.get('request_sufficient', 0)} "
+                f"unclassified={counts.get('unclassified', 0)} "
+                f"| c0-divergent patches {found['patches_divergent_c0']}"
+                f"/{found['patches_tried']}"
+            )
+            for case in found["interactions"][:3]:
+                lines.append(
+                    "    interaction: " + json.dumps(case, default=str, sort_keys=True)
+                )
     return "\n".join(lines)
+
+
+def _seed_classification(seed: dict[str, Any], arm: str) -> dict[str, Any] | None:
+    visits = seed.get("visits", {}).get(arm)
+    if visits is None:
+        return None
+    return classify_findings(visits, seed.get("request_variants", {}).get(arm, []))
 
 
 def write_per_seed_csv(payloads: dict[str, dict[str, Any]], path: str | Path) -> None:
@@ -191,8 +356,27 @@ def write_per_seed_csv(payloads: dict[str, dict[str, Any]], path: str | Path) ->
                 for arm, stats in seed.get("arms", {}).items():
                     for metric in ARM_METRICS:
                         value = stats.get(metric)
-                        if value is not None:
-                            writer.writerow([sut, seed["seed"], arm, metric, value])
+                        if value is None:
+                            continue
+                        if isinstance(value, bool):
+                            value = int(value)
+                        writer.writerow([sut, seed["seed"], arm, metric, value])
+                    classified = _seed_classification(seed, arm)
+                    if classified is not None:
+                        for cls, count in sorted(classified["findings"].items()):
+                            writer.writerow([sut, seed["seed"], arm, f"findings_{cls}", count])
+                        writer.writerow(
+                            [
+                                sut,
+                                seed["seed"],
+                                arm,
+                                "patches_divergent_c0",
+                                classified["patches_divergent_c0"],
+                            ]
+                        )
+                        writer.writerow(
+                            [sut, seed["seed"], arm, "patches_tried", classified["patches_tried"]]
+                        )
                 if "baseline_findings" in seed:
                     writer.writerow([sut, seed["seed"], "baseline", "findings",
                                      seed["baseline_findings"]])

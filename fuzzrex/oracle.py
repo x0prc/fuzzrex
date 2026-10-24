@@ -329,6 +329,13 @@ class SearchTrace:
     elapsed_s: float
     stopped_early: bool = False
     request_iterations: int = 0
+    # Per-visit detail, recorded only when request_mutation > 0 so the
+    # archived fixed-sequence protocol stays byte-exact:
+    # visits: every probed cell (config, patch, health, divergences);
+    # request_variants: per distinct patch, whether it already diverged
+    # against the original sequence under c0 (the pure request-side signal).
+    visits: list[dict[str, Any]] = field(default_factory=list)
+    request_variants: list[dict[str, Any]] = field(default_factory=list)
 
 
 def canonical_config(config: Any) -> str:
@@ -383,6 +390,10 @@ def run_joint_search_traced(
     request inputs and only the config can explain a divergence.
     Mutations use a dedicated RNG seeded like the config one, so the
     request schedule is identical across arms of the same seed.
+    When p > 0 the trace also records per-visit detail and each
+    variant's c0 divergence against the original sequence, which
+    post-hoc analysis classifies into config-only / interaction /
+    request-side findings.
     """
     if iterations < 1:
         raise ValueError("iterations must be >= 1")
@@ -411,6 +422,9 @@ def run_joint_search_traced(
         request_iters = 0
         rng_request = random.Random(seed) if request_mutation > 0.0 else None
         variant_baselines: dict[str, list[ResponseSnapshot]] = {}
+        visits: list[dict[str, Any]] = []
+        request_variants: list[dict[str, Any]] = []
+        record_detail = rng_request is not None
         started = time.monotonic()
 
         for index in range(iterations):
@@ -430,15 +444,48 @@ def run_joint_search_traced(
                         with configured_service(orchestrator, baseline_config, defer=True):
                             base_snaps = execute_sequence(replay, timeout=timeout)
                         variant_baselines[base_key] = base_snaps
+                        if record_detail:
+                            # free signal: patched vs original at c0 decides
+                            # whether the request mutation alone diverges
+                            c0_divs = compare_sequences(replay, baseline_snaps, base_snaps)
+                            request_variants.append(
+                                {
+                                    "patch": patch,
+                                    "diverges_at_c0": bool(c0_divs),
+                                    "kinds": [d.kind for d in c0_divs],
+                                }
+                            )
                 else:
                     base_snaps = baseline_snaps
                 with configured_service(orchestrator, variant, defer=True):
                     snaps = execute_sequence(replay, timeout=timeout)
             except OrchestratorError:
                 unhealthy += 1
+                if record_detail:
+                    visits.append(
+                        {
+                            "iteration": index,
+                            "config": variant,
+                            "patch": patch,
+                            "healthy": False,
+                            "divergent": False,
+                            "kinds": [],
+                        }
+                    )
             else:
                 visited += 1
                 divergences = compare_sequences(replay, base_snaps, snaps)
+                if record_detail:
+                    visits.append(
+                        {
+                            "iteration": index,
+                            "config": variant,
+                            "patch": patch,
+                            "healthy": True,
+                            "divergent": bool(divergences),
+                            "kinds": [d.kind for d in divergences],
+                        }
+                    )
                 if divergences:
                     results.append(CellResult(variant, tuple(divergences), request_patch=patch))
                     if first_iteration is None:
@@ -468,6 +515,8 @@ def run_joint_search_traced(
             elapsed_s=time.monotonic() - started,
             stopped_early=stopped,
             request_iterations=request_iters,
+            visits=visits,
+            request_variants=request_variants,
         )
     finally:
         orchestrator.restore()

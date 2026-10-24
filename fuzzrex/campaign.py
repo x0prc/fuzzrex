@@ -209,6 +209,8 @@ def _seed_from_dict(data: dict) -> SeedResult:
         baseline_findings=data["baseline_findings"],
         baseline_per_cell=data["baseline_per_cell"],
         baseline_signatures=data["baseline_signatures"],
+        visits=data.get("visits", {}),
+        request_variants=data.get("request_variants", {}),
     )
 
 
