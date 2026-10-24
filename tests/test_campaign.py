@@ -57,7 +57,24 @@ def _files(tmp_path, cells='{"flag": [false, true]}'):
 def _one_seed(orch, baseline, spec, cells, **kwargs):
     return ComparisonResult(
         name=kwargs["name"],
-        seeds=[SeedResult(seed=kwargs["seeds"][0], arms={"joint": _stats()})],
+        seeds=[
+            SeedResult(
+                seed=kwargs["seeds"][0],
+                arms={"joint": _stats()},
+                visits={
+                    "joint": [
+                        {
+                            "iteration": 0,
+                            "config": {"flag": True},
+                            "patch": {},
+                            "healthy": True,
+                            "divergent": True,
+                            "kinds": ["status"],
+                        }
+                    ]
+                },
+            )
+        ],
     )
 
 
@@ -221,6 +238,8 @@ def test_run_resumes_done_seeds_and_checkpoints(mock_orch, mock_compare, tmp_pat
     assert mock_compare.call_args.kwargs["seeds"] == (1,)
     stored = json.loads(out.read_text())
     assert [s["seed"] for s in stored["seeds"]] == [0, 1]
+    # seed 0 arrived through _seed_from_dict: detail must survive resume
+    assert stored["seeds"][0]["visits"]["joint"][0]["kinds"] == ["status"]
     assert stored["budget"]["grid_cells"] == 2
     mock_orch.return_value.up.assert_called_once()
     mock_orch.return_value.restore.assert_called_once()

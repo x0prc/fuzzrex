@@ -3,6 +3,8 @@ import json
 import pytest
 
 from fuzzrex.analysis import (
+    arm_interactions,
+    classify_findings,
     load_results,
     main,
     paired_test,
@@ -58,6 +60,123 @@ def _payload() -> dict:
         "seeds": seeds,
         "budget": {"seeds": [0, 1, 2], "joint_iterations": 30, "grid_cells": 2},
     }
+
+
+def _visit(config, *, patch=None, divergent=True, healthy=True, kinds=None):
+    return {
+        "iteration": 0,
+        "config": config,
+        "patch": patch or {},
+        "healthy": healthy,
+        "divergent": divergent,
+        "kinds": kinds if kinds is not None else (["status"] if divergent else []),
+    }
+
+
+def test_classify_findings_taxonomy():
+    clean_context = _visit({"flag": True}, divergent=False)
+    patched = _visit({"flag": True}, patch={"value": 1}, kinds=["auth-boundary"])
+    variants = [{"patch": {"value": 1}, "diverges_at_c0": False, "kinds": []}]
+
+    # interaction: patch clean at c0, original clean at this config
+    out = classify_findings([clean_context, patched], variants)
+    assert out["findings"] == {"interaction": 1}
+    assert out["interactions"] == [
+        {"config": {"flag": True}, "patch": {"value": 1}, "kinds": ["auth-boundary"]}
+    ]
+
+    # request_sufficient: the patch already diverges at c0
+    out = classify_findings(
+        [clean_context, patched], [{"patch": {"value": 1}, "diverges_at_c0": True}]
+    )
+    assert out["findings"] == {"request_sufficient": 1}
+
+    # config_reproducible: the original request diverges at the same
+    # config (and that unpatched divergence is a config_only finding)
+    out = classify_findings([clean_context, patched, _visit({"flag": True})], variants)
+    assert out["findings"] == {"config_only": 1, "config_reproducible": 1}
+
+    # unclassified: no healthy original context and no c0 record
+    out = classify_findings([_visit({"flag": True}, patch={"value": 1})], [])
+    assert out["findings"] == {"unclassified": 1}
+
+
+def test_classify_findings_unpatched_and_unhealthy_context():
+    visits = [
+        _visit({"flag": False}),  # unpatched divergence -> config_only
+        _visit({"flag": False}, healthy=False, divergent=False),  # unhealthy: no context
+        _visit({"flag": True}, patch={"value": 1}),  # -> unclassified
+    ]
+    out = classify_findings(visits, [{"patch": {"value": 1}, "diverges_at_c0": False}])
+    assert out["findings"] == {"config_only": 1, "unclassified": 1}
+
+
+def test_classify_findings_dedups_pairs_and_counts_patches():
+    visits = [
+        _visit({"flag": True}, patch={"value": 1}),
+        _visit({"flag": True}, patch={"value": 1}),  # same (config, patch) pair
+    ]
+    variants = [
+        {"patch": {"value": 1}, "diverges_at_c0": False, "kinds": []},
+        {"patch": {"value": 2}, "diverges_at_c0": True, "kinds": ["status"]},
+    ]
+    out = classify_findings(visits, variants)
+    assert out["total_unique"] == 1
+    assert out["patches_tried"] == 2
+    assert out["patches_divergent_c0"] == 1
+
+
+def test_arm_interactions_is_none_without_detail():
+    assert arm_interactions(_payload(), "joint") is None
+
+
+def test_arm_interactions_sums_across_seeds():
+    payload = _payload()
+    payload["seeds"][0]["visits"] = {"joint": [_visit({"flag": False})]}
+    payload["seeds"][1]["visits"] = {"joint": [_visit({"flag": True}, patch={"v": 1})]}
+    payload["seeds"][1]["request_variants"] = {
+        "joint": [{"patch": {"v": 1}, "diverges_at_c0": True}]
+    }
+    out = arm_interactions(payload, "joint")
+    assert out["findings"] == {"config_only": 1, "request_sufficient": 1}
+    assert out["total_unique"] == 2
+    assert out["patches_divergent_c0"] == 1
+
+
+def test_render_report_shows_interactions_only_when_recorded():
+    assert "interaction classification" not in render_report(_payload())
+
+    payload = _payload()
+    payload["seeds"][0]["visits"] = {"joint": [_visit({"flag": False})]}
+    report = render_report(payload)
+    assert "interaction classification" in report
+    assert "config-only=1" in report
+    # feature usage line reflects the recorded stop/mutation counters
+    assert "feature usage" not in render_report(_payload())
+    payload["seeds"][0]["arms"]["joint"]["stopped_early"] = True
+    payload["seeds"][0]["arms"]["joint"]["request_iterations"] = 6
+    report = render_report(payload)
+    assert "req-iters=6" in report
+    assert "stopped=1/3 seeds" in report
+
+
+def test_csv_includes_interaction_and_feature_metrics(tmp_path):
+    import csv
+
+    payload = _payload()
+    payload["seeds"][0]["arms"]["joint"]["stopped_early"] = True
+    payload["seeds"][0]["arms"]["joint"]["request_iterations"] = 6
+    payload["seeds"][0]["visits"] = {"joint": [_visit({"flag": False})]}
+    csv_path = tmp_path / "per_seed.csv"
+    write_per_seed_csv({"sut-x": payload}, csv_path)
+
+    with csv_path.open() as handle:
+        rows = list(csv.reader(handle))
+    metrics = {(row[2], row[3]): row[4] for row in rows[1:]}
+    assert metrics[("joint", "stopped_early")] == "1"
+    assert metrics[("joint", "request_iterations")] == "6"
+    assert metrics[("joint", "findings_config_only")] == "1"
+    assert metrics[("joint", "patches_tried")] == "0"
 
 
 def test_sign_flip_identical_pairs_is_one():

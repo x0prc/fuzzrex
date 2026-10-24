@@ -33,6 +33,8 @@ def _trace(
     unique: int | None = None,
     stopped: bool = False,
     req_iters: int = 0,
+    visits: list | None = None,
+    variants: list | None = None,
 ) -> SearchTrace:
     cells = tuple(
         CellResult({"flag": True}, (Divergence("GET /x", "auth-boundary", "bypassed", 302, 200),))
@@ -48,6 +50,8 @@ def _trace(
         elapsed_s=9.0,
         stopped_early=stopped,
         request_iterations=req_iters,
+        visits=list(visits or []),
+        request_variants=list(variants or []),
     )
 
 
@@ -204,6 +208,63 @@ def test_run_comparison_forwards_request_mutation(mock_traced, mock_baseline, tm
     assert mock_traced.call_args.kwargs["request_mutation"] == 0.2
     assert result.seeds[0].arms["joint"].request_iterations == 7
     assert result.to_dict()["seeds"][0]["arms"]["joint"]["request_iterations"] == 7
+
+
+@patch("fuzzrex.experiments.run_baseline_matrix")
+@patch("fuzzrex.experiments.run_joint_search_traced")
+def test_run_comparison_carries_interaction_detail(mock_traced, mock_baseline, tmp_path):
+    spec = tmp_path / "openapi.json"
+    spec.write_text(
+        '{"openapi": "3.0.0", "paths": '
+        '{"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}}'
+    )
+    visits = [
+        {
+            "iteration": 0,
+            "config": {"flag": False},
+            "patch": {},
+            "healthy": True,
+            "divergent": True,
+            "kinds": ["status"],
+        },
+        {
+            "iteration": 1,
+            "config": {"flag": True},
+            "patch": {"value": 1},
+            "healthy": True,
+            "divergent": True,
+            "kinds": ["auth-boundary"],
+        },
+    ]
+    variants = [{"patch": {"value": 1}, "diverges_at_c0": False, "kinds": []}]
+    mock_traced.return_value = _trace(2, visits=visits, variants=variants)
+
+    orch = MagicMock()
+    orch.base_url = "http://sut.test"
+    result = run_comparison(
+        orch,
+        {"flag": False},
+        str(spec),
+        [{"flag": False}],
+        seeds=(0,),
+        arms=(JointArm("joint"),),
+        run_baseline=False,
+        request_mutation=0.2,
+    )
+
+    seed_dict = result.to_dict()["seeds"][0]
+    assert seed_dict["visits"]["joint"] == visits
+    assert seed_dict["request_variants"]["joint"] == variants
+    # and the detail survives a JSON round trip (checkpoint writes)
+    assert json.loads(json.dumps(seed_dict)) == seed_dict
+
+
+def test_to_dict_omits_empty_interaction_detail():
+    """Archived (Phase 1) payloads must not gain keys for absent detail."""
+    result = ComparisonResult(name="x", seeds=[SeedResult(seed=1)])
+    seed_dict = result.to_dict()["seeds"][0]
+    assert "visits" not in seed_dict
+    assert "request_variants" not in seed_dict
 
 
 @patch("fuzzrex.experiments.run_baseline_matrix")

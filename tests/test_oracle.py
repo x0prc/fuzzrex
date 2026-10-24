@@ -481,6 +481,137 @@ def test_request_mutation_off_by_default(mock_cm, mock_execute, mock_request):
     for call in mock_execute.call_args_list:
         assert call.args[0] == planned
     assert trace.request_iterations == 0
+    # the archived protocol records no interaction detail at all
+    assert trace.visits == []
+    assert trace.request_variants == []
+
+
+@patch("fuzzrex.oracle.mutate_request")
+@patch("fuzzrex.oracle.mutate_config")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_request_mutation_records_interaction_detail(
+    mock_cm, mock_execute, mock_config, mock_request,
+):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    mutated = [_request("GET /x-mutated")]
+    patch = {"label": "GET /x", "field": "params", "path": ["q"], "value": 99}
+    mock_request.side_effect = [(mutated, patch)] * 3
+    mock_config.return_value = {"debug": True}
+    # planned baseline, c0-under-variant (patch clean at c0), then
+    # divergent, clean, divergent cells
+    mock_execute.side_effect = [
+        [_snap(200)],
+        [_snap(200)],
+        [_snap(401)],
+        [_snap(200)],
+        [_snap(401)],
+    ]
+
+    trace = run_joint_search_traced(
+        orch,
+        {"debug": False},
+        [_request("GET /x")],
+        iterations=3,
+        seed=1,
+        request_mutation=1.0,
+    )
+
+    assert trace.request_iterations == 3
+    assert mock_execute.call_count == 5  # baseline + c0 + 3 cells (no extra requests)
+    assert [v["divergent"] for v in trace.visits] == [True, False, True]
+    assert all(v["healthy"] for v in trace.visits)
+    # clean visits keep their patch too: they are the counterfactual context
+    assert trace.visits[1]["patch"] == patch
+    assert trace.request_variants == [
+        {"patch": patch, "diverges_at_c0": False, "kinds": []}
+    ]
+
+
+@patch("fuzzrex.oracle.mutate_request")
+@patch("fuzzrex.oracle.mutate_config")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_request_mutation_flags_patch_that_diverges_at_c0(
+    mock_cm, mock_execute, mock_config, mock_request,
+):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    mutated = [_request("GET /x-mutated")]
+    patch = {"label": "GET /x", "field": "params", "path": ["q"], "value": 99}
+    mock_request.side_effect = [(mutated, patch)]
+    mock_config.return_value = {"debug": True}
+    # planned baseline 200, c0-under-variant 401 (patch alone diverges),
+    # cell clean against its own c0 reference
+    mock_execute.side_effect = [[_snap(200)], [_snap(401)], [_snap(401)]]
+
+    trace = run_joint_search_traced(
+        orch,
+        {"debug": False},
+        [_request("GET /x")],
+        iterations=1,
+        seed=1,
+        request_mutation=1.0,
+    )
+
+    record = trace.request_variants[0]
+    assert record["diverges_at_c0"] is True
+    assert record["kinds"]  # the request-side finding's kinds are kept
+    assert trace.divergent_cells == ()  # config had no effect under this patch
+
+
+@patch("fuzzrex.oracle.mutate_request")
+@patch("fuzzrex.oracle.mutate_config")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_request_mutation_records_unhealthy_visit(mock_cm, mock_execute, mock_config, mock_request):
+    from fuzzrex.orchestrator import OrchestratorError
+
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+
+    mutated = [_request("GET /x-mutated")]
+    patch = {"label": "GET /x", "field": "params", "path": ["q"], "value": 99}
+    mock_request.side_effect = [(mutated, patch)]
+    mock_config.return_value = {"debug": True}
+    mock_execute.side_effect = [[_snap(200)], [_snap(200)]]
+
+    enters = {"count": 0}
+
+    def enter(_self=None):
+        enters["count"] += 1
+        if enters["count"] == 3:  # baseline, c0, then the cell itself
+            raise OrchestratorError("unhealthy")
+        return orch
+
+    mock_cm.return_value.__enter__ = MagicMock(side_effect=enter)
+
+    trace = run_joint_search_traced(
+        orch,
+        {"debug": False},
+        [_request("GET /x")],
+        iterations=1,
+        seed=1,
+        request_mutation=1.0,
+    )
+
+    assert trace.cells_unhealthy == 1
+    assert trace.visits == [
+        {
+            "iteration": 0,
+            "config": {"debug": True},
+            "patch": patch,
+            "healthy": False,
+            "divergent": False,
+            "kinds": [],
+        }
+    ]
+    # the variant's c0 record survives even when the cell itself was unhealthy
+    assert trace.request_variants[0]["diverges_at_c0"] is False
+    assert mock_execute.call_count == 2
 
 
 def test_iterations_validation():
