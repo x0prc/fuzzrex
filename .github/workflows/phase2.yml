@@ -27,6 +27,12 @@ on:
       plan_mutations:
         description: Per-seed plan mutations k
         default: "2"
+      adopt_every:
+        description: Adopt a divergent cell every k-th divergent hit
+        default: "1"
+      restart_every:
+        description: Reset the mutation base every n iterations (0 = never)
+        default: "4"
 
 concurrency:
   group: phase2-campaign
@@ -102,7 +108,7 @@ jobs:
       - name: Run campaign
         if: ${{ inputs.target == 'all' || inputs.target == matrix.sut }}
         run: |
-          FLAGS="--seeds ${{ inputs.seeds }} --iterations ${{ inputs.iterations }} --request-mutation ${{ inputs.request_mutation }} --plan-mutations ${{ inputs.plan_mutations }} --spec examples/${{ matrix.sut }}/openapi.yml --baseline-config examples/${{ matrix.sut }}/baseline.json --cells examples/${{ matrix.sut }}/cells.json --name ${{ matrix.sut }} --out findings/phase2/${{ matrix.sut }}.json"
+          FLAGS="--seeds ${{ inputs.seeds }} --iterations ${{ inputs.iterations }} --request-mutation ${{ inputs.request_mutation }} --plan-mutations ${{ inputs.plan_mutations }} --adopt-every ${{ inputs.adopt_every }} --restart-every ${{ inputs.restart_every }} --spec examples/${{ matrix.sut }}/openapi.yml --baseline-config examples/${{ matrix.sut }}/baseline.json --cells examples/${{ matrix.sut }}/cells.json --name ${{ matrix.sut }} --out findings/phase2/${{ matrix.sut }}.json"
           if [ -n "${{ inputs.stall }}" ]; then
             FLAGS="$FLAGS --stall ${{ inputs.stall }}"
           fi

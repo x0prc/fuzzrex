@@ -16,7 +16,7 @@ from typing import Any
 from fuzzrex.api_fuzzer import ApiFuzzer
 from fuzzrex.baseline import run_baseline_matrix
 from fuzzrex.mutation import vary_plan
-from fuzzrex.oracle import run_joint_search_traced
+from fuzzrex.oracle import RESTART_EVERY, run_joint_search_traced
 from fuzzrex.orchestrator import DockerComposeOrchestrator
 
 
@@ -161,6 +161,8 @@ def run_comparison(
     stall_window: int | None = None,
     request_mutation: float = 0.0,
     plan_mutations: int = 0,
+    adopt_every: int = 1,
+    restart_every: int | None = RESTART_EVERY,
     on_seed: Callable[[SeedResult], None] | None = None,
 ) -> ComparisonResult:
     """Run every arm per seed against the same SUT.
@@ -177,7 +179,10 @@ def run_comparison(
     the planned sequence are varied per seed (deterministic in the
     seed, producer requests excluded so chains keep resolving), so
     seeds no longer share one global plan. k=0 keeps the archived
-    protocol.
+    protocol. `adopt_every`/`restart_every` parameterize the feedback
+    schedule of the joint arms (adoption period of divergent cells;
+    period of the baseline reset, None to never reset) for robustness
+    ablations; the defaults reproduce the archived schedule.
     """
     if plan_mutations < 0:
         raise ValueError("plan_mutations must be >= 0")
@@ -204,6 +209,8 @@ def run_comparison(
                 feedback=arm.feedback,
                 stall_window=stall_window,
                 request_mutation=request_mutation,
+                adopt_every=adopt_every,
+                restart_every=restart_every,
             )
             kinds: Counter[str] = Counter(
                 divergence.kind

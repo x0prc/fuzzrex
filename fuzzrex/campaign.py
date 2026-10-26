@@ -42,6 +42,7 @@ from fuzzrex.experiments import (
     config_grid,
     run_comparison,
 )
+from fuzzrex.oracle import RESTART_EVERY
 from fuzzrex.orchestrator import DockerComposeOrchestrator, OrchestratorError
 from fuzzrex.schema import load_document
 
@@ -92,6 +93,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--request-mutation", type=float, default=0.0, help="per-iteration request mutation p"
     )
     search.add_argument("--plan-mutations", type=int, default=0, help="per-seed plan variety k")
+    search.add_argument(
+        "--adopt-every",
+        type=int,
+        default=1,
+        help="adopt a divergent cell every k-th divergent hit (default: 1)",
+    )
+    search.add_argument(
+        "--restart-every",
+        type=int,
+        default=RESTART_EVERY,
+        help="reset the mutation base every n iterations, 0 = never "
+        f"(default: {RESTART_EVERY})",
+    )
 
     budget = parser.add_argument_group("budget")
     budget.add_argument("--seeds", type=int, default=10, help="seed count (0..N-1)")
@@ -225,6 +239,7 @@ def run(args: argparse.Namespace) -> int:
     cells, default_enums = _load_cells(args.cells, baseline)
     enums = load_document(args.enums) if args.enums else default_enums
     arms = _resolve_arms(args.arms)
+    restart_every = None if args.restart_every == 0 else args.restart_every
     name = args.name or args.service
     out = args.out or Path("findings") / "campaigns" / f"{name}.json"
 
@@ -237,6 +252,8 @@ def run(args: argparse.Namespace) -> int:
         "stall_window": args.stall,
         "request_mutation": args.request_mutation,
         "plan_mutations": args.plan_mutations,
+        "adopt_every": args.adopt_every,
+        "restart_every": restart_every,
     }
     started = time.time()
     result = ComparisonResult(name=name)
@@ -248,6 +265,8 @@ def run(args: argparse.Namespace) -> int:
             "stall_window",
             "request_mutation",
             "plan_mutations",
+            "adopt_every",
+            "restart_every",
             "joint_iterations",
             "baseline_max_examples",
             "grid_cells",
@@ -298,6 +317,8 @@ def run(args: argparse.Namespace) -> int:
                 stall_window=args.stall,
                 request_mutation=args.request_mutation,
                 plan_mutations=args.plan_mutations,
+                adopt_every=args.adopt_every,
+                restart_every=restart_every,
             )
             result.seeds.extend(partial.seeds)
             budget["elapsed_s"] = round(time.time() - started, 1)

@@ -362,6 +362,8 @@ def run_joint_search_traced(
     feedback: bool = True,
     stall_window: int | None = None,
     request_mutation: float = 0.0,
+    adopt_every: int = 1,
+    restart_every: int | None = RESTART_EVERY,
 ) -> SearchTrace:
     """Alternate config mutation and API probing; trace the whole run.
 
@@ -373,7 +375,15 @@ def run_joint_search_traced(
     periodic restarts to the baseline); `feedback=False` is the ablation
     arm -- every iteration mutates the baseline independently, so no
     divergence information ever influences where the search goes.
-    `enums` constrains named keys to their allowed values during mutation.
+    The schedule is parameterized for robustness ablations:
+    `adopt_every=k` adopts a divergent cell as the new mutation base
+    only on every k-th divergent hit (k=1: every divergent cell, the
+    default; larger k weakens feedback), and `restart_every=n` resets
+    the base to the baseline after n iterations, on non-divergent ones
+    (n=RESTART_EVERY=4 by default; None never resets, letting a
+    divergent base persist). The defaults reproduce the archived
+    schedule exactly. `enums` constrains named keys to their allowed
+    values during mutation.
 
     `stall_window=None` disables early stopping. With `stall_window=k`,
     the run stops (trace `stopped_early=True`) once k consecutive
@@ -401,6 +411,10 @@ def run_joint_search_traced(
         raise ValueError("stall_window must be >= 1 or None")
     if not 0.0 <= request_mutation <= 1.0:
         raise ValueError("request_mutation must be in [0.0, 1.0]")
+    if adopt_every < 1:
+        raise ValueError("adopt_every must be >= 1")
+    if restart_every is not None and restart_every < 1:
+        raise ValueError("restart_every must be >= 1 or None")
 
     rng = random.Random(seed)
     # Cells are applied with defer=True (disk-only exit, no restart) since
@@ -420,6 +434,7 @@ def run_joint_search_traced(
         stall = 0
         stopped = False
         request_iters = 0
+        divergent_hits = 0
         rng_request = random.Random(seed) if request_mutation > 0.0 else None
         variant_baselines: dict[str, list[ResponseSnapshot]] = {}
         visits: list[dict[str, Any]] = []
@@ -496,8 +511,14 @@ def run_joint_search_traced(
                         seen_unique.add(key)
                         new_unique = True
                     if feedback:
-                        mutation_base = variant
-                elif feedback and index % RESTART_EVERY == RESTART_EVERY - 1:
+                        divergent_hits += 1
+                        if divergent_hits % adopt_every == 0:
+                            mutation_base = variant
+                elif (
+                    feedback
+                    and restart_every is not None
+                    and index % restart_every == restart_every - 1
+                ):
                     mutation_base = baseline_config
 
             stall = 0 if new_unique else stall + 1
