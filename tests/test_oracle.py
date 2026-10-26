@@ -330,6 +330,73 @@ def test_restart_every_resets_mutation_base(mock_cm, mock_execute):
     assert mock_execute.call_count == RESTART_EVERY + 2
 
 
+def test_feedback_schedule_validation():
+    orch, _ = _orchestrator_mock()
+    with pytest.raises(ValueError, match="adopt_every"):
+        run_joint_search_traced(orch, {}, [], iterations=1, adopt_every=0)
+    with pytest.raises(ValueError, match="restart_every"):
+        run_joint_search_traced(orch, {}, [], iterations=1, restart_every=0)
+
+
+@patch("fuzzrex.oracle.mutate_config")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_adopt_every_batches_feedback(mock_cm, mock_execute, mock_config):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+    dirty, clean = [_snap(401)], [_snap(200)]
+    baseline = {"debug": False}
+
+    def bases(adopt_every):
+        mock_config.reset_mock()
+        mock_execute.side_effect = [clean] + [dirty] * 4
+        mock_config.side_effect = [{"v": i} for i in range(4)]
+        run_joint_search_traced(
+            orch,
+            baseline,
+            [_request("GET /x")],
+            iterations=4,
+            seed=5,
+            adopt_every=adopt_every,
+        )
+        return [call.args[0] for call in mock_config.call_args_list]
+
+    # archived schedule (k=1): every divergent cell is adopted immediately
+    assert bases(1) == [baseline, {"v": 0}, {"v": 1}, {"v": 2}]
+    # batched (k=2): only every 2nd divergent hit adopts; base holds between
+    assert bases(2) == [baseline, baseline, {"v": 1}, {"v": 1}]
+
+
+@patch("fuzzrex.oracle.mutate_config")
+@patch("fuzzrex.oracle.execute_sequence")
+@patch("fuzzrex.oracle.configured_service")
+def test_restart_every_is_parameterized(mock_cm, mock_execute, mock_config):
+    orch, cm = _orchestrator_mock()
+    mock_cm.return_value = cm
+    dirty, clean = [_snap(401)], [_snap(200)]
+    baseline = {"debug": False}
+
+    def bases(restart_every):
+        mock_config.reset_mock()
+        # divergent at 0, clean at 1, divergent at 2
+        mock_execute.side_effect = [clean, dirty, clean, dirty]
+        mock_config.side_effect = [{"v": i} for i in range(3)]
+        run_joint_search_traced(
+            orch,
+            baseline,
+            [_request("GET /x")],
+            iterations=3,
+            seed=5,
+            restart_every=restart_every,
+        )
+        return [call.args[0] for call in mock_config.call_args_list]
+
+    # n=2: the clean iteration at index 1 resets the base before iteration 2
+    assert bases(2) == [baseline, {"v": 0}, baseline]
+    # None: a divergent base persists, no reset ever
+    assert bases(None) == [baseline, {"v": 0}, {"v": 0}]
+
+
 @patch("fuzzrex.oracle.execute_sequence")
 @patch("fuzzrex.oracle.configured_service")
 def test_stall_window_stops_early(mock_cm, mock_execute):

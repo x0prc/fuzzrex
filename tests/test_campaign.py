@@ -254,6 +254,8 @@ def test_run_rejects_resume_with_a_different_protocol(mock_orch, mock_compare, t
 
     with pytest.raises(SystemExit, match="budget mismatch.*stall_window"):
         main(REQUIRED + argv + ["--seeds", "1", "--stall", "8"])
+    with pytest.raises(SystemExit, match="budget mismatch.*adopt_every"):
+        main(REQUIRED + argv + ["--seeds", "1", "--adopt-every", "2"])
     assert mock_compare.call_count == 1  # no mixed-protocol run happened
     assert mock_orch.return_value.up.call_count == 1
 
@@ -277,6 +279,8 @@ def test_run_forwards_feature_flags_into_budget(mock_orch, mock_compare, tmp_pat
             "--stall", "8",
             "--request-mutation", "0.3",
             "--plan-mutations", "2",
+            "--adopt-every", "3",
+            "--restart-every", "0",
             "--arms", "joint",
             "--no-baseline",
         ]
@@ -287,12 +291,16 @@ def test_run_forwards_feature_flags_into_budget(mock_orch, mock_compare, tmp_pat
     assert kwargs["stall_window"] == 8
     assert kwargs["request_mutation"] == 0.3
     assert kwargs["plan_mutations"] == 2
+    assert kwargs["adopt_every"] == 3
+    assert kwargs["restart_every"] is None  # CLI 0 maps to "never reset"
     assert kwargs["run_baseline"] is False
     assert [a.name for a in kwargs["arms"]] == ["joint"]
     budget = json.loads(out.read_text())["budget"]
     assert budget["stall_window"] == 8
     assert budget["request_mutation"] == 0.3
     assert budget["plan_mutations"] == 2
+    assert budget["adopt_every"] == 3
+    assert budget["restart_every"] is None
     assert budget["arms"] == ["joint"]
 
 

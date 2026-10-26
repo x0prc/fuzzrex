@@ -212,6 +212,35 @@ def test_run_comparison_forwards_request_mutation(mock_traced, mock_baseline, tm
 
 @patch("fuzzrex.experiments.run_baseline_matrix")
 @patch("fuzzrex.experiments.run_joint_search_traced")
+def test_run_comparison_forwards_feedback_schedule(mock_traced, mock_baseline, tmp_path):
+    spec = tmp_path / "openapi.json"
+    spec.write_text(
+        '{"openapi": "3.0.0", "paths": '
+        '{"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}}'
+    )
+    mock_traced.return_value = _trace(0)
+
+    orch = MagicMock()
+    orch.base_url = "http://sut.test"
+    run_comparison(
+        orch,
+        {"flag": False},
+        str(spec),
+        [{"flag": False}],
+        seeds=(0,),
+        arms=(JointArm("joint"),),
+        run_baseline=False,
+        adopt_every=3,
+        restart_every=None,
+    )
+
+    kwargs = mock_traced.call_args.kwargs
+    assert kwargs["adopt_every"] == 3
+    assert kwargs["restart_every"] is None
+
+
+@patch("fuzzrex.experiments.run_baseline_matrix")
+@patch("fuzzrex.experiments.run_joint_search_traced")
 def test_run_comparison_carries_interaction_detail(mock_traced, mock_baseline, tmp_path):
     spec = tmp_path / "openapi.json"
     spec.write_text(

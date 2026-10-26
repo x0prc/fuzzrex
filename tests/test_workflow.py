@@ -102,12 +102,16 @@ def test_phase2_dispatch_exposes_the_feature_inputs():
         "stall",
         "request_mutation",
         "plan_mutations",
+        "adopt_every",
+        "restart_every",
     }
     assert inputs["target"]["default"] == "crapi"
     assert inputs["fresh"]["type"] == "boolean"
     assert inputs["stall"]["default"] == "8"
     assert inputs["request_mutation"]["default"] == "0.2"
     assert inputs["plan_mutations"]["default"] == "2"
+    assert inputs["adopt_every"]["default"] == "1"
+    assert inputs["restart_every"]["default"] == "4"
 
 
 def test_phase2_matrix_ships_runner_arguments_per_sut():
@@ -127,7 +131,8 @@ def test_phase2_run_step_wires_the_feature_flags():
     run = next(step for step in steps if step.get("name") == "Run campaign")
     assert "fuzzrex-campaign" in run["run"]
     for flag in ("--seeds", "--iterations", "--stall", "--request-mutation",
-                 "--plan-mutations", "--baseline-config", "--cells", "--spec"):
+                 "--plan-mutations", "--adopt-every", "--restart-every",
+                 "--baseline-config", "--cells", "--spec"):
         assert flag in run["run"]
     assert "findings/phase2" in run["run"]
     assert "matrix.sut" in run["if"]
