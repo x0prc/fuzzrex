@@ -2,10 +2,13 @@ import json
 import random
 
 from fuzzrex.mutation import (
+    _FILE_ASPECT_ORDER,
     BOUNDARY_INTS,
+    FILE_CONTENTS,
     SPECIAL_STRINGS,
     _get_slot,
     _resample,
+    _resample_file,
     mutate_request,
     vary_plan,
 )
@@ -71,7 +74,7 @@ def test_sequence_without_mutable_slots_returns_unchanged():
             url="http://sut.test/upload",
             path="/upload",
             label="POST /upload",
-            files={"file": ("clip.mp4", b"\x00", "video/mp4")},
+            headers={"X-Trace": "1"},  # headers only: nothing mutable
         )
     ]
 
@@ -79,6 +82,72 @@ def test_sequence_without_mutable_slots_returns_unchanged():
 
     assert patch == {}
     assert result == list(sequence)
+
+
+def _upload(label="POST /upload"):
+    return _req(label, files={"file": ("clip.mp4", b"\x00\x01", "video/mp4")})
+
+
+def test_file_slots_mutate_one_aspect_and_stay_json_ready():
+    sequence = [_req("GET /a", params={"q": 1}), _upload()]
+
+    aspects = set()
+    for seed in range(40):
+        rng = random.Random(seed)
+        result, patch = mutate_request(sequence, rng)
+
+        changed = [i for i, (a, b) in enumerate(zip(sequence, result, strict=True)) if a != b]
+        assert len(changed) == 1
+        index = changed[0]
+        assert result[index].label == patch["label"]
+        json.dumps(patch, sort_keys=True)  # JSON-ready: no bytes leak into the patch
+        if patch["field"] == "files":
+            aspects.add(patch["aspect"])
+            assert isinstance(patch["value"], str)  # content described by pool name
+            file_field = patch["path"][0]
+            before = sequence[index].files[file_field]
+            after = result[index].files[file_field]
+            assert len([1 for x, y in zip(before, after, strict=True) if x != y]) == 1  # one aspect
+            # everything except the chosen aspect stays intact
+            assert after[_FILE_ASPECT_ORDER.index(patch["aspect"])] != before[
+                _FILE_ASPECT_ORDER.index(patch["aspect"])
+            ]
+        else:
+            assert "aspect" not in patch  # scalar patches keep the v1 shape
+            assert _get_slot(result[index], patch["field"], tuple(patch["path"])) == patch["value"]
+        for before_req, after_req in zip(sequence, result, strict=True):
+            if before_req is not sequence[index]:
+                assert before_req == after_req
+
+    assert aspects == {"filename", "content", "content_type"}
+
+
+def test_file_mutation_is_deterministic_in_seed():
+    sequence = [_upload()]
+    assert mutate_request(sequence, random.Random(9)) == mutate_request(sequence, random.Random(9))
+
+
+def test_skip_labels_applies_to_file_requests():
+    sequence = [_upload()]
+    result, patch = mutate_request(
+        sequence, random.Random(0), skip_labels=frozenset({"POST /upload"})
+    )
+    assert patch == {}
+    assert result == list(sequence)
+
+
+def test_resample_file_never_returns_current():
+    rng = random.Random(2)
+    for _, data in FILE_CONTENTS:
+        for _ in range(5):
+            new, _ = _resample_file("content", ("a.mp4", data, "video/mp4"), rng)
+            assert new != data
+    for _ in range(10):
+        new, _ = _resample_file("filename", ("clip.mp4", b"x", "video/mp4"), rng)
+        assert new != "clip.mp4"
+    for _ in range(10):
+        new, _ = _resample_file("content_type", ("clip.mp4", b"x", "video/mp4"), rng)
+        assert new != "video/mp4"
 
 
 def test_resample_bool_flips():
