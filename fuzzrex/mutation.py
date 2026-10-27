@@ -1,10 +1,12 @@
 """Request-side mutation for the joint search.
 
-Mutates scalar request values (query params, cookies, JSON body leaves)
-of the planned sequence, keeping methods, URLs, links, headers, and file
-payloads intact so every replay means the same thing structurally. One
-slot is mutated per call; the returned patch record identifies the
-variant canonically for baseline caching and pair identity.
+Mutates one slot of the planned sequence per call -- a scalar request
+value (query param, cookie, JSON body leaf) or a multipart file aspect
+(content bytes, filename, content type) -- keeping methods, URLs,
+links, and headers intact so every replay means the same thing
+structurally. The returned patch record identifies the variant
+canonically for baseline caching and pair identity; file patches
+describe content by pool name, never raw bytes, so they stay JSON-ready.
 """
 
 from __future__ import annotations
@@ -32,6 +34,31 @@ SPECIAL_STRINGS = (
     "${7*7}",
     "A" * 256,
 )
+FILE_CONTENTS: tuple[tuple[str, bytes], ...] = (
+    ("empty", b""),
+    ("php-tag", b"<?php system($_GET['c']); ?>"),
+    ("script-tag", b"<script>alert(1)</script>"),
+    ("null-block", b"\x00" * 512),
+    ("binary-junk", bytes(range(256)) * 4),
+    ("oversize", b"A" * (1 << 20)),
+)
+FILE_NAMES = (
+    "shell.php",
+    "../evil.mp4",
+    "x.mp4.php",
+    "A" * 256 + ".mp4",
+    "payload",
+    "x%00.mp4",
+    ".hidden",
+)
+FILE_CONTENT_TYPES = (
+    "text/plain",
+    "text/html",
+    "application/x-sh",
+    "image/png",
+    "application/json",
+)
+_FILE_ASPECT_ORDER = ("filename", "content", "content_type")
 
 
 def mutate_request(
@@ -40,35 +67,62 @@ def mutate_request(
     *,
     skip_labels: frozenset[str] = frozenset(),
 ) -> tuple[list[HttpRequest], dict[str, Any]]:
-    """Return the sequence with one scalar slot mutated plus its patch record.
+    """Return the sequence with one slot mutated plus its patch record.
 
-    The slot is chosen uniformly over every query-param, cookie, and
-    JSON body leaf in the sequence; its value is resampled from typed
-    pools (booleans flip, ints/floats take boundary values, strings take
-    a special-string pool, None becomes a string). Requests without
-    mutable slots (multipart-only, header-only) and requests whose label
-    is in `skip_labels` are never chosen. The patch records the label,
-    field, path, and new value -- JSON-ready, so equal patches denote
+    The slot is chosen uniformly over every query-param, cookie, JSON
+    body leaf, and multipart file aspect (filename, content, content
+    type) in the sequence. Scalars are resampled from typed pools
+    (booleans flip, ints/floats take boundary values, strings take a
+    special-string pool, None becomes a string); files take their own
+    pools of adversarial payloads, names, and mismatched types.
+    Requests without mutable slots (header-only) and requests whose
+    label is in `skip_labels` are never chosen. The patch records the
+    label, field, path, and new value -- JSON-ready (file content is
+    described by pool name, never embedded), so equal patches denote
     the same variant.
     """
-    slots = [
-        (index, field, path)
+    slots: list[tuple[str, Any, ...]] = [
+        ("scalar", index, field, path)
         for index, request in enumerate(sequence)
         if request.label not in skip_labels
         for field, path in _slots_of(request)
     ]
+    slots += [
+        ("file", index, file_field, aspect)
+        for index, request in enumerate(sequence)
+        if request.label not in skip_labels
+        for file_field, aspect in _file_slots_of(request)
+    ]
     if not slots:
         return list(sequence), {}
-    index, field, path = rng.choice(slots)
-    target = sequence[index]
-    value = _resample(_get_slot(target, field, path), rng)
-    mutated = replace(target, **{field: _with_slot(getattr(target, field), path, value)})
-    patch = {
-        "label": target.label,
-        "field": field,
-        "path": list(path),
-        "value": value,
-    }
+    pick = rng.choice(slots)
+    if pick[0] == "scalar":
+        _, index, field, path = pick
+        target = sequence[index]
+        value = _resample(_get_slot(target, field, path), rng)
+        mutated = replace(target, **{field: _with_slot(getattr(target, field), path, value)})
+        patch = {
+            "label": target.label,
+            "field": field,
+            "path": list(path),
+            "value": value,
+        }
+    else:
+        _, index, file_field, aspect = pick
+        target = sequence[index]
+        new_value, described = _resample_file(aspect, target.files[file_field], rng)
+        entry = list(target.files[file_field])
+        entry[_FILE_ASPECT_ORDER.index(aspect)] = new_value
+        files = dict(target.files)
+        files[file_field] = tuple(entry)
+        mutated = replace(target, files=files)
+        patch = {
+            "label": target.label,
+            "field": "files",
+            "path": [file_field],
+            "aspect": aspect,
+            "value": described,
+        }
     result = list(sequence)
     result[index] = mutated
     return result, patch
@@ -108,6 +162,13 @@ def _slots_of(request: HttpRequest) -> Iterator[tuple[str, tuple[Any, ...]]]:
             yield "body", path
 
 
+def _file_slots_of(request: HttpRequest) -> Iterator[tuple[str, str]]:
+    """Yield (file field, aspect) for every mutable multipart aspect."""
+    for file_field in sorted(request.files or {}, key=str):
+        for aspect in _FILE_ASPECT_ORDER:
+            yield file_field, aspect
+
+
 def _walk_scalars(node: Any, path: tuple[Any, ...] = ()) -> Iterator[tuple[tuple[Any, ...], Any]]:
     if isinstance(node, dict):
         for key, value in node.items():
@@ -145,3 +206,26 @@ def _resample(value: Any, rng: random.Random) -> Any:
     if isinstance(value, str):
         return rng.choice([s for s in SPECIAL_STRINGS if s != value])
     return rng.choice(SPECIAL_STRINGS)  # None or any other scalar
+
+
+def _resample_file(
+    aspect: str, entry: tuple[str, bytes, str], rng: random.Random
+) -> tuple[Any, str]:
+    """Resample one file aspect from its pool, never equal to the current.
+
+    Returns (new value, JSON-safe description): raw content bytes are
+    described by their pool name so the patch stays serializable.
+    """
+    filename, content, content_type = entry
+    if aspect == "content":
+        pool: list[tuple[str, Any]] = [
+            (name, data) for name, data in FILE_CONTENTS if data != content
+        ] or list(FILE_CONTENTS)
+        name, data = rng.choice(pool)
+        return data, name
+    if aspect == "filename":
+        pool = [name for name in FILE_NAMES if name != filename] or list(FILE_NAMES)
+    else:
+        pool = [t for t in FILE_CONTENT_TYPES if t != content_type] or list(FILE_CONTENT_TYPES)
+    chosen = rng.choice(pool)
+    return chosen, chosen
