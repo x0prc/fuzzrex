@@ -47,11 +47,8 @@ from fuzzrex.orchestrator import DockerComposeOrchestrator, OrchestratorError
 from fuzzrex.schema import load_document
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="fuzzrex-campaign",
-        description="Checkpointed multi-seed Config x API comparison campaign.",
-    )
+def add_sut_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the shared SUT group; its flags construct a DockerComposeOrchestrator."""
     sut = parser.add_argument_group("SUT")
     sut.add_argument("--compose", required=True, type=Path, help="docker-compose file")
     sut.add_argument("--service", required=True, help="service to mutate and health-check")
@@ -64,6 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="restart",
         help="how config cells take effect (default: restart)",
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="fuzzrex-campaign",
+        description="Checkpointed multi-seed Config x API comparison campaign.",
+    )
+    add_sut_arguments(parser)
 
     search = parser.add_argument_group("search")
     search.add_argument("--spec", required=True, type=Path, help="OpenAPI spec (JSON or YAML)")
