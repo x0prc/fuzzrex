@@ -12,7 +12,7 @@ A CLI tool that fuzzes REST APIs from their OpenAPI spec and mutates configurati
 4. **Joint Config×API search** — feedback loop that mutates the config, probes the API, and grows from divergent cells.
 5. **Baseline runner** — replays Schemathesis per config cell for the single-cell comparison arm.
 6. **Early stopping (opt-in)** — `run_comparison(..., stall_window=k)` stops a seed's joint arms once k consecutive iterations produce no new unique divergent cell; recorded per arm as `stopped_early`. Off by default, so the archived Phase 1 protocol is untouched.
-7. **Discovery** — `fuzzrex.discover` mechanizes fixture prep against a running baseline cell: `prune_spec` keeps only operations the deployment serves (dropping 404/501/transport-dead ones and anything chained to them) and warns when a canary probe shows an auth middleware answering before routing, which makes reachability unverifiable without a chained login; `filter_knobs` keeps only candidate config keys whose values change an HTTP response.
+7. **Discovery** — `fuzzrex.discover` mechanizes fixture prep against a running baseline cell: `prune_spec` keeps only operations the deployment serves (dropping 404/501/transport-dead ones and anything chained to them) and warns when a canary probe shows an auth middleware answering before routing, which makes reachability unverifiable without a chained login; `filter_knobs` keeps only candidate config keys whose values change an HTTP response. The `fuzzrex-discover` command runs both passes end to end and writes campaign-ready `--spec`/`--enums` files.
 8. **Request-side mutation (opt-in)** — `run_comparison(..., request_mutation=p)` makes an iteration replay a single-slot mutated copy of the planned sequence with probability p (query/cookie/JSON-body scalars resampled from typed boundary pools; multipart file aspects — content, filename, content type — from adversarial pools, described by pool name so patches stay JSON-ready; methods, URLs, and links untouched). Pairing is preserved by lazily recording and caching each variant's baseline under c0, so only the config can explain a divergence; divergent cells record the patch that defined their request variant. Default 0.0 reproduces the fixed-sequence protocol exactly.
 9. **Per-seed plan variety (opt-in)** — `run_comparison(..., plan_mutations=k)` re-varies k request slots of the planned sequence per seed from the same typed pools (deterministic in the seed; producer requests like logins are excluded so chained links keep resolving), so seeds no longer share one global plan. 0 keeps the archived protocol.
 10. **Interaction classification (opt-in)** — when request-side mutation records per-visit detail, `fuzzrex.analysis` classifies every unique (config, patch) finding into the Config×API taxonomy: `interaction` (patch diverges only under this config, is clean at c0, and the original request is clean there — both changes required), `config_only`, `config_reproducible` (the config alone reproduces it), `request_sufficient` (the patch alone already diverges at c0), and `unclassified` when a counterfactual context is missing. Detail is serialized only when recorded, so Phase 1 checkpoints keep their exact shape; the report shows per-arm counts plus interaction case studies, and the per-seed CSV gains the classification rows alongside `stopped_early`/`request_iterations`.
@@ -223,6 +223,36 @@ provenance, and resuming refuses a checkpoint whose protocol differs
 from the current arguments, so budgets can never be mixed in one
 results file. Phase 1's archived protocol stays in
 `examples/phase1_campaign.py`, untouched.
+
+### Spec and knob discovery (fuzzrex-discover)
+
+`fuzzrex-discover` (equivalently `python -m fuzzrex.discover_cli`)
+replaces the manual fixture work of onboarding a new SUT with two
+mechanical probe passes against the running baseline cell — it writes
+exactly the `--spec`/`--enums` inputs a campaign dispatch consumes:
+
+```bash
+fuzzrex-discover \
+  --compose examples/crapi/compose.yml --service crapi-identity \
+  --config examples/crapi/.env --base-url http://127.0.0.1:8080 \
+  --health-path /identity/health_check --reload recreate \
+  --spec examples/crapi/openapi.yml \
+  --baseline-config examples/crapi/baseline.json \
+  --cells examples/crapi/cells.json \
+  --out-spec examples/crapi/openapi.discovered.yml \
+  --out-enums examples/crapi/enums.discovered.yml
+```
+
+The prune pass drops operations the deployment does not serve (404/501
+or dead, `--drop-statuses` overrides) plus everything transitively
+chained to them; a canary probe warns when auth middleware answers
+unknown paths before routing (chain a login via `x-fuzzrex-token-from`
+to prune authenticated). The knobs pass keeps only candidate keys whose
+values change a structured, sensitive-key-masked HTTP response — the
+candidates come from the `--cells` domains (or `--enums`). `--only
+prune|knobs` runs one pass (a list-shaped `--cells` has no candidates,
+so knobs need `--enums`). What remains is what the joint search can
+observe; endpoint relevance to config gates stays fixture work.
 
 ### Phase 1: joint vs baseline vs ablation
 
