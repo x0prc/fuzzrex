@@ -141,6 +141,7 @@ jobs:
           merge-multiple: true
       - name: Summarize
         run: |
+          set -o pipefail
           python -m fuzzrex.analysis findings/phase2 | tee analysis.txt
           {
             echo "### Phase 2 campaign results"

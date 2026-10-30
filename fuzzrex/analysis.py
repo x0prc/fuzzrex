@@ -297,13 +297,17 @@ def render_report(payload: dict[str, Any]) -> str:
         )
 
     if "joint" in arms and "joint-no-feedback" in arms:
-        test = paired_test(payload, "joint", "joint-no-feedback")
-        method = "exact" if test.exact else "monte-carlo"
-        lines.append(
-            f"paired {test.arm_a} vs {test.arm_b} ({test.metric}): "
-            f"Δ={test.mean_diff:+.2f}, p={test.p_value:.4f} "
-            f"({method} sign-flip, n={test.n_pairs})"
-        )
+        try:
+            test = paired_test(payload, "joint", "joint-no-feedback")
+        except ValueError as exc:  # e.g. a 2-seed smoke: table still renders
+            lines.append(f"paired test skipped: {exc}")
+        else:
+            method = "exact" if test.exact else "monte-carlo"
+            lines.append(
+                f"paired {test.arm_a} vs {test.arm_b} ({test.metric}): "
+                f"Δ={test.mean_diff:+.2f}, p={test.p_value:.4f} "
+                f"({method} sign-flip, n={test.n_pairs})"
+            )
 
     usage = []
     for arm in arms:
