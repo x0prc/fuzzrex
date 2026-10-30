@@ -234,6 +234,15 @@ def test_render_report_has_arms_and_paired_line():
     assert "Δ=+4.00" in report
 
 
+def test_render_report_degrades_on_few_seeds():
+    payload = _payload()
+    payload["seeds"] = payload["seeds"][:2]  # a 2-seed smoke dispatch
+    report = render_report(payload)
+    assert "paired test skipped: need >= 3 matched seeds" in report
+    assert "joint-no-feedback" in report  # the table still renders
+    assert "paired joint vs joint-no-feedback" not in report
+
+
 def test_csv_roundtrip_and_load(tmp_path):
     results = tmp_path / "results"
     results.mkdir()
